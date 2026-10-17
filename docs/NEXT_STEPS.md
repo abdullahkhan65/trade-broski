@@ -1,6 +1,6 @@
 # Next steps, roadmap and open questions
 
-## Status (17 Oct 2026)
+## Status (18 Oct 2026)
 
 **Built (phase 1 code complete):**
 - [x] Live 24/7 prices with no keys: Binance (BTC and gold perp), Kraken (EUR/USD, GBP/USD), Yahoo (USD/JPY), Bybit fallback; broker-level spreads, no weekend stops
@@ -13,10 +13,13 @@
 - [x] Three paper accounts side by side (Standard M15, Moderate M15, Aggressive scalper M5), each with its own rules, playbook and learning loop
 - [x] XM Standard (MT5) modelling: lots and contract sizes, 0.01-lot minimum rules, spreads and swaps in points, 1:1000 margin, 20% stop-out, breakeven, daily profit target
 - [x] Self-learning: market-regime detection, 2 new strategies (range reversion, momentum breakout), per-account strategy switching with probation, weekly walk-forward tuning of stops/targets
-- [x] MT5-style terminal (Market Watch, chart with SL/TP lines, Trade/History/Journal tabs, account bar, Compare view), settings with modes side by side, news page, Telegram alerts
+- [x] Modern terminal (MT5 layout, TradingView-style look, no flicker): Market Watch, chart with SL/TP and SMC levels/zones, Positions/History/Journal/Learning tabs, Compare view; settings with modes side by side, news page, Telegram alerts
+- [x] Agreed mode table: daily profit/loss caps (Standard +1.5/−2, Moderate +2.5/−2.5, Aggressive +5/−5 with half risk after +3), trades per day, losing-streak rule, cost filter, H1 trend filter
+- [x] Two AI tiers: Haiku for every gate, Sonnet second opinion on high-stakes trades + weekly playbooks, separate budgets (total $6 default, $8 hard max)
+- [x] Smart Money Concepts: PDH/PDL, session levels, liquidity pools, sweeps, FVG, order blocks; location filter, AI context, chart overlay; liquidity-sweep strategy (off until proven)
 - [x] Daily review, weekly playbook, scorecard with auto-disable
 - [x] Nightly backups (local and Telegram), systemd, Caddy, setup and update scripts
-- [x] 30 unit tests: XM lot sizing and min-lot rules, spreads, gaps, breakeven, swap, stop-out, weekend freeze, DB upgrade, settings limits, signals on M5/M15
+- [x] 59 unit tests: XM lot sizing and min-lot rules, spreads, gaps, breakeven, swap, stop-out, weekend freeze, DB upgrade, settings limits, signals on M5/M15
 
 **Not yet verified**, because it needs your keys or a server:
 - [ ] A real Haiku call through the gate (budget guards and parsing are unit-level only)
@@ -34,6 +37,13 @@
 7. **Months 1–3:** let it run, and do the weekly review in OPERATIONS.md. Don't change strategy settings more than once a week, so you can tell what helped.
 
 ## Strategy work (important)
+
+**Latest (18 Oct 2026, 60 days M15 / 30 days M5 with XM spreads):** most strategies lose after costs. Standard is about flat, Moderate loses, and Aggressive BTC on M5 with the SMC filter is the only clear positive (+7%). Aggressive can't trade EURUSD/GBPUSD on M5 at all, because the spread is about half the stop. Next tests, in order:
+1. A **2-year backtest** of every mode with the new rules (`python -m app.backtest --mode standard --symbol all --days 730`). 60 days is too few trades to decide anything.
+2. **Aggressive on M15 for forex**, keeping M5 for BTC (needs a timeframe setting per symbol).
+3. A sweep **with confirmation** (enter on the retest of the FVG/OB the sweep candle left, not at its close).
+
+Older notes:
 
 The first backtest (BTC, 120 days) shows the raw `trend_pullback` signal **losing about 0.27R per trade**, with fees and slippage costing about 0.3R per round trip. Ideas to test **in the backtester first**, one at a time:
 - **Higher timeframe for BTC**: 1h candles for BTC, so stops are wider, positions bigger relative to fees, and there are fewer trades. This needs a `timeframe` setting per instrument.

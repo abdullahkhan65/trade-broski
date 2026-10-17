@@ -12,10 +12,11 @@ Loops (all in one asyncio process):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from . import adaptive, risk, scorecard
+from . import adaptive, risk, scorecard, smc
 from .ai import gate
 from .ai.client import AIClient
 from .ai.review import current_playbook
@@ -351,16 +352,28 @@ class Engine:
             return
 
         st = self.broker.state(cfg, account)
+        # the mode's daily discipline: trades per day, losing streak, protect a good day
+        block, day_mult, day_note = self._day_rules(account, cfg, st.equity)
+        if block:
+            self._record(account, sig, False, block)
+            return
+        risk_mult *= day_mult
         q = self.prices.get(sig.symbol)
+        bid, ask = self.broker.broker_quote(cfg, inst, q)
+        too_costly = risk.spread_check(cfg, ask - bid, sig.atr, sig.stop_atr)
+        if too_costly:
+            self._record(account, sig, False, too_costly)
+            return
         entry = self.broker.entry_price(cfg, inst, sig.side, q)
         # cheap dry-run with default stops so we don't pay for AI on an impossible trade
-        dry = risk.size_order(inst, cfg, sig.side, entry, sig.atr, st.equity, st.margin_used, risk_mult=risk_mult)
+        dry = risk.size_order(inst, cfg, sig.side, entry, sig.atr, st.equity, st.margin_used,
+                              sig.stop_atr, sig.target_atr, risk_mult)
         if isinstance(dry, risk.Rejection):
             self._record(account, sig, False, dry.reason)
             return
 
         ai_reply, ai_used, reason = None, False, sig.note
-        stop_atr = target_atr = None
+        stop_atr, target_atr = sig.stop_atr, sig.target_atr      # structure stop/target if the strategy has one
         block = self.ai.budget_block(cfg)
         if block:
             if cfg["ai"]["when_unavailable"] != "rules_only":
@@ -368,7 +381,6 @@ class Engine:
                 return
             reason = f"[rules only - {block}] {sig.note}"
         else:
-            bid, ask = self.broker.broker_quote(cfg, inst, q)
             prompt = gate.build_prompt(
                 inst, sig, candles,
                 {"equity": st.equity, "margin_used_pct": st.margin_used_pct, "status": st.status},
@@ -380,6 +392,7 @@ class Engine:
                 session_name(now),
                 round((ask - bid) / inst.point),
                 cfg,
+                smc.context_text(candles, sig.atr, inst.decimals),
             )
             res = await gate.ask(self.ai, cfg, prompt)
             ai_used = True
@@ -394,6 +407,30 @@ class Engine:
                 return
             reason = str(res.data.get("reason", ""))[:300]
             stop_atr, target_atr = res.data["stop_atr"], res.data["target_atr"]
+
+            # high-stakes trade? ask Sonnet before risking it (it can veto)
+            first = risk.size_order(inst, cfg, sig.side, entry, sig.atr, st.equity, st.margin_used,
+                                    stop_atr, target_atr, risk_mult)
+            why_second = isinstance(first, risk.Order) and gate.needs_second_opinion(
+                cfg, first.risk_pct, first.note.startswith("0.01 lot"), float(res.data["confidence"]))
+            if why_second:
+                res2 = await gate.second_opinion(self.ai, cfg, prompt, res.data, why_second,
+                                                 first.risk_pct, first.risk_usd)
+                if res2.ok:
+                    ai_reply = json.dumps({"haiku": res.data, "sonnet": res2.data, "why_sonnet": why_second})
+                    take2, why_not2 = gate.validate_reply(res2.data, sig, cfg["ai"]["min_confidence"])
+                    if not take2:
+                        self.cooldown[(account, sig.symbol, sig.type)] = now + AI_SKIP_COOLDOWN
+                        self._record(account, sig, False, f"Sonnet veto ({why_second}): {why_not2}"[:300],
+                                     ai_used, ai_reply)
+                        return
+                    reason = "[Sonnet ✓] " + str(res2.data.get("reason", ""))[:280]
+                    stop_atr, target_atr = res2.data["stop_atr"], res2.data["target_atr"]
+                elif not res2.unavailable:
+                    # Sonnet was asked but failed: on a high-stakes trade, don't gamble without it
+                    self._record(account, sig, False, f"Sonnet error -> SKIP ({res2.error})", ai_used, ai_reply)
+                    return
+                # unavailable (budget/cap/off): Haiku's decision stands
 
         # re-price at the live quote after the AI call (a few seconds may have passed)
         q = self.prices.get(sig.symbol)
@@ -410,9 +447,23 @@ class Engine:
             await self.tg.send(self._open_text(account, inst, order, sig, reason, would=True))
             return
 
-        decision_id = self._record(account, sig, True, order.note or None, ai_used, ai_reply)
+        note = "; ".join(x for x in (order.note, day_note) if x)
+        decision_id = self._record(account, sig, True, note or None, ai_used, ai_reply)
         self.broker.open(cfg, account, order, sig.type, reason, decision_id, sig.regime)
         await self.tg.send(self._open_text(account, inst, order, sig, reason))
+
+    def _day_rules(self, account: str, cfg: dict, equity: float) -> tuple[str | None, float, str]:
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # a partly-closed position has rows in both tables with the same ticket - count it once
+        opened = int(self.db.scalar(
+            "SELECT COUNT(*) FROM (SELECT id AS ticket FROM positions WHERE account=? AND opened_at >= ? "
+            "UNION SELECT ticket FROM trades WHERE account=? AND opened_at >= ?)",
+            (account, day, account, day)) or 0)
+        closed = self.db.all("SELECT pnl_usd, exit_reason FROM trades WHERE account=? AND closed_at >= ? "
+                             "ORDER BY closed_at DESC, id DESC", (account, day))
+        day_start = self.db.kv_get(f"day_start_equity:{account}", equity) or equity
+        pnl_pct = 100 * (equity - day_start) / day_start if day_start > 0 else 0.0
+        return risk.day_rules(cfg, pnl_pct, opened, risk.losses_in_row(closed))
 
     def _news_context(self, cfg: dict, inst: Instrument, now: datetime) -> dict:
         if not cfg["news"]["enabled"]:

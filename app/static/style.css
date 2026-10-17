@@ -1,16 +1,17 @@
 :root {
-  --bg: #0e1116; --panel: #161b22; --panel-2: #1c222b; --border: #2a313c;
-  --text: #e6e9ee; --muted: #8b95a5; --accent: #4c8dff;
-  --up: #26a269; --down: #e5534b; --warn: #d29922;
+  --bg: #0b0e14; --panel: #12161f; --panel-2: #181d28; --border: #232a38;
+  --text: #e4e8f0; --muted: #8790a3; --accent: #3b82f6;
+  --up: #22ab94; --down: #f23645; --warn: #e0a526;
   --radius: 10px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font-size: 14px; }
+body { margin: 0; background: var(--bg); color: var(--text); font-size: 13.5px; -webkit-font-smoothing: antialiased; }
 a { color: var(--accent); text-decoration: none; }
 nav { display: flex; gap: 4px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--border);
-      background: var(--panel); position: sticky; top: 0; z-index: 5; }
-nav .brand { font-weight: 700; margin-right: 16px; }
+      background: rgba(18,22,31,.92); backdrop-filter: blur(8px); position: sticky; top: 0; z-index: 5; }
+nav .brand { font-weight: 700; margin-right: 16px; display: flex; align-items: center; gap: 8px; }
 nav a { padding: 6px 12px; border-radius: 6px; color: var(--muted); }
 nav a.active, nav a:hover { background: var(--panel-2); color: var(--text); }
 nav .right { margin-left: auto; color: var(--muted); font-size: 12px; }
@@ -45,7 +46,7 @@ button.small { padding: 3px 8px; font-size: 12px; }
 .quote .sym { font-weight: 600; display: flex; justify-content: space-between; }
 .quote .px { font-size: 20px; font-variant-numeric: tabular-nums; margin: 4px 0; transition: color .3s; }
 .quote .meta { color: var(--muted); font-size: 12px; }
-.alert { background: #3a2a0a; border: 1px solid var(--warn); color: #f0d48a; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+.alert { background: rgba(224,165,38,.14); color: #f3d38a; border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
 .bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin-top: 6px; }
 .bar > div { height: 100%; background: var(--accent); }
 pre.playbook { white-space: pre-wrap; background: var(--panel-2); padding: 10px; border-radius: 8px; margin: 0; font-family: inherit; }

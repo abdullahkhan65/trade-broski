@@ -21,18 +21,21 @@ from typing import Any
 from .db import DB, iso
 
 MODES = ["standard", "moderate", "aggressive"]
+DEFAULTS_VERSION = 2          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
 MODE_LABELS = {
     "standard": "Standard",
     "moderate": "Moderate",
     "aggressive": "Aggressive scalper",
 }
 MODE_BLURBS = {
-    "standard": "Principled trader: only clean setups, 1% risk, skips trades the minimum lot can't size "
-                "correctly, lets winners run (2R+). Grows the account slowly.",
-    "moderate": "A bit more risk and room: 1.5% risk, accepts the 0.01-lot minimum up to 3% risk, "
-                "news-momentum trades on, halves gold/forex over the weekend.",
-    "aggressive": "Scalper on M5: 2% risk, quick 1.2R+ targets, stop to breakeven at +1R, "
-                  "stops for the day at +3% (goal) or -5%. Aims for 1-3% a day - expect big swings.",
+    "standard": "Wall Street-style marathon trader: trusts the process, no greed. Only A-grade setups in the "
+                "direction of the H1 trend, 0.75% risk, max 3 trades a day, done for the day at +1.5% or -2% "
+                "or after 2 losses in a row. Steady growth of 0.5-1.5% on good days, 0% on quiet ones.",
+    "moderate": "Professional swing/day trader, happy with steady growth over months: 1% risk, max 4 trades "
+                "a day, done for the day at +2.5% or -2.5%, half risk after 2 losses in a row.",
+    "aggressive": "Professional small-account scaler on M5: hunts clean entries, takes quick profits and gets "
+                  "out. 2% risk, max 8 trades a day, risk halves after +3% and it stops at +5% or -5%. "
+                  "Skips trades where the spread eats too much of the stop. Takes risk, never blows the account.",
 }
 SYMBOLS = ["XAU_USD", "EUR_USD", "GBP_USD", "USD_JPY", "BTC_USDT"]
 
@@ -49,18 +52,21 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
         "enabled": True,
         "timeframe": "15m",
         "risk": {
-            "risk_per_trade_pct": 1.0,
+            "risk_per_trade_pct": 0.75,
             "min_lot_rule": "skip", "min_lot_max_risk_pct": 1.0,
             "max_leverage_forex": 10.0, "max_leverage_metal": 5.0, "max_leverage_crypto": 3.0,
             "max_margin_used_pct": 50.0,
             "max_open_positions": 2, "max_usd_forex_positions": 1,
-            "daily_loss_limit_pct": 3.0, "weekly_loss_limit_pct": 6.0,
-            "kill_switch_drawdown_pct": 20.0, "daily_profit_target_pct": 0.0,
+            "daily_loss_limit_pct": 2.0, "weekly_loss_limit_pct": 5.0,
+            "kill_switch_drawdown_pct": 15.0, "daily_profit_target_pct": 1.5,
+            "profit_half_risk_at_pct": 0.0, "max_trades_per_day": 3,
+            "loss_streak": 2, "loss_streak_action": "stop_day", "max_spread_stop_pct": 0.0,
         },
         "exits": {"default_stop_atr": 1.5, "default_target_atr": 3.0, "min_stop_atr": 1.0,
                   "max_stop_atr": 3.0, "min_reward_risk": 2.0, "breakeven_at_r": 0.0},
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": False,
-                    "range_reversion": True, "momentum_breakout": True, "session_filter": True},
+                    "range_reversion": True, "momentum_breakout": True, "session_filter": True,
+                    "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True},
         "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True},
         "ai": {"min_confidence": 0.6, "when_unavailable": "skip"},
         "weekend": {"mode": "close", "minutes_before_close": 30, "no_new_trades_minutes": 120},
@@ -69,18 +75,21 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
         "enabled": True,
         "timeframe": "15m",
         "risk": {
-            "risk_per_trade_pct": 1.5,
-            "min_lot_rule": "allow", "min_lot_max_risk_pct": 3.0,
+            "risk_per_trade_pct": 1.0,
+            "min_lot_rule": "allow", "min_lot_max_risk_pct": 2.0,
             "max_leverage_forex": 20.0, "max_leverage_metal": 10.0, "max_leverage_crypto": 5.0,
             "max_margin_used_pct": 60.0,
             "max_open_positions": 3, "max_usd_forex_positions": 2,
-            "daily_loss_limit_pct": 4.0, "weekly_loss_limit_pct": 8.0,
-            "kill_switch_drawdown_pct": 25.0, "daily_profit_target_pct": 0.0,
+            "daily_loss_limit_pct": 2.5, "weekly_loss_limit_pct": 7.0,
+            "kill_switch_drawdown_pct": 20.0, "daily_profit_target_pct": 2.5,
+            "profit_half_risk_at_pct": 0.0, "max_trades_per_day": 4,
+            "loss_streak": 2, "loss_streak_action": "half_risk", "max_spread_stop_pct": 0.0,
         },
         "exits": {"default_stop_atr": 1.5, "default_target_atr": 2.5, "min_stop_atr": 1.0,
                   "max_stop_atr": 3.0, "min_reward_risk": 1.5, "breakeven_at_r": 1.5},
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": True,
-                    "range_reversion": True, "momentum_breakout": True, "session_filter": True},
+                    "range_reversion": True, "momentum_breakout": True, "session_filter": True,
+                    "htf_trend_filter": False, "liquidity_sweep": False, "smc_filter": True},
         "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True},
         "ai": {"min_confidence": 0.55, "when_unavailable": "rules_only"},
         "weekend": {"mode": "halve", "minutes_before_close": 30, "no_new_trades_minutes": 90},
@@ -95,12 +104,15 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
             "max_margin_used_pct": 70.0,
             "max_open_positions": 4, "max_usd_forex_positions": 3,
             "daily_loss_limit_pct": 5.0, "weekly_loss_limit_pct": 12.0,
-            "kill_switch_drawdown_pct": 35.0, "daily_profit_target_pct": 3.0,
+            "kill_switch_drawdown_pct": 25.0, "daily_profit_target_pct": 5.0,
+            "profit_half_risk_at_pct": 3.0, "max_trades_per_day": 8,
+            "loss_streak": 2, "loss_streak_action": "half_risk", "max_spread_stop_pct": 15.0,
         },
         "exits": {"default_stop_atr": 1.2, "default_target_atr": 1.8, "min_stop_atr": 0.8,
                   "max_stop_atr": 2.0, "min_reward_risk": 1.2, "breakeven_at_r": 1.0},
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": True,
-                    "range_reversion": True, "momentum_breakout": True, "session_filter": True},
+                    "range_reversion": True, "momentum_breakout": True, "session_filter": True,
+                    "htf_trend_filter": False, "liquidity_sweep": False, "smc_filter": True},
         "adaptive": {"enabled": True, "min_trades": 12, "auto_tune": True},
         "ai": {"min_confidence": 0.5, "when_unavailable": "rules_only"},
         "weekend": {"mode": "close", "minutes_before_close": 45, "no_new_trades_minutes": 60},
@@ -114,8 +126,10 @@ DEFAULTS: dict[str, Any] = {
         "ema_fast": 20, "ema_slow": 50, "rsi_period": 14, "atr_period": 14,
         "spike_atr_mult": 3.0, "dead_market_percentile": 20.0, "auto_disable_after_trades": 30,
     },
-    "ai": {"enabled": True, "max_calls_per_day": 120, "monthly_budget_usd": 2.0,
-           "daily_review": True, "weekly_playbook": True},
+    "ai": {"enabled": True, "max_calls_per_day": 120, "monthly_budget_usd": 6.0,
+           "daily_review": True, "weekly_playbook": True,
+           "strong_enabled": True, "strong_budget_usd": 3.0, "strong_calls_per_day": 10,
+           "second_opinion": True, "second_opinion_risk_pct": 1.5},
     "news": {
         "enabled": True, "blackout_minutes": 15, "blackout_medium_impact": False,
         "digest_enabled": True, "digest_interval_min": 60, "bias_threshold": 0.6,
@@ -125,7 +139,7 @@ DEFAULTS: dict[str, Any] = {
     "broker": {
         "leverage_forex": 1000.0, "leverage_metal": 1000.0, "leverage_crypto": 50.0,
         "margin_call_pct": 50.0, "stop_out_pct": 20.0,
-        "spread_XAU_USD": 35, "spread_EUR_USD": 16, "spread_GBP_USD": 21,
+        "spread_XAU_USD": 50, "spread_EUR_USD": 23, "spread_GBP_USD": 28,
         "spread_USD_JPY": 18, "spread_BTC_USDT": 4000,
         "swap_XAU_USD_long": -50.0, "swap_XAU_USD_short": 25.0,
         "swap_EUR_USD_long": -8.0, "swap_EUR_USD_short": 2.0,
@@ -173,10 +187,19 @@ FIELDS: list[Field] = [
           "int", 10, 500, 5, help="Per account: a signal with negative average R after N trades is switched off."),
     Field("ai.enabled", "Use Claude Haiku to approve trades", "AI (all modes)", "bool"),
     Field("ai.max_calls_per_day", "Max AI calls per day (all purposes)", "AI (all modes)", "int", 0, 300, 5),
-    Field("ai.monthly_budget_usd", "AI monthly budget ($)", "AI (all modes)", "float", 0, 5, 0.25,
-          help="Hard stop. Hard limit $5 keeps the whole bill under $8."),
-    Field("ai.daily_review", "Daily AI review (per mode)", "AI (all modes)", "bool"),
-    Field("ai.weekly_playbook", "Weekly playbook rewrite (per mode)", "AI (all modes)", "bool"),
+    Field("ai.monthly_budget_usd", "AI monthly budget, Haiku + Sonnet ($)", "AI (all modes)", "float", 0, 8, 0.25,
+          help="Hard stop for ALL AI calls. Hard limit $8."),
+    Field("ai.daily_review", "Daily AI review (per mode, Haiku)", "AI (all modes)", "bool"),
+    Field("ai.weekly_playbook", "Weekly playbook rewrite (per mode, Sonnet)", "AI (all modes)", "bool"),
+    Field("ai.strong_enabled", "Use Claude Sonnet for high-stakes calls", "AI (all modes)", "bool",
+          help="Sonnet costs 20x Haiku per token. Used only for second opinions and the weekly playbook."),
+    Field("ai.strong_budget_usd", "Sonnet monthly budget ($, part of the total)", "AI (all modes)", "float", 0, 5, 0.25,
+          help="When reached: second opinions stop (Haiku's decision stands) and the playbook falls back to Haiku."),
+    Field("ai.strong_calls_per_day", "Max Sonnet calls per day", "AI (all modes)", "int", 0, 40, 1),
+    Field("ai.second_opinion", "Sonnet second opinion on high-stakes trades", "AI (all modes)", "bool",
+          help="Only after Haiku says TAKE, and only if: the 0.01 lot forces extra risk, risk is at or above "
+               "the % below, or Haiku's confidence is borderline. Sonnet can veto."),
+    Field("ai.second_opinion_risk_pct", "Second opinion when risk per trade >= (%)", "AI (all modes)", "float", 0.1, 8, 0.1),
     Field("news.enabled", "Use news and economic calendar", "News & events", "bool"),
     Field("news.blackout_minutes", "Blackout around high-impact events (min)", "News & events", "int", 0, 120, 5,
           help="No new gold/forex trades this many minutes before/after a high-impact release."),
@@ -224,7 +247,16 @@ MODE_FIELDS: list[Field] = [
     Field("risk.weekly_loss_limit_pct", "Weekly loss limit (%)", "Limits", "float", 1, 30, 0.5),
     Field("risk.kill_switch_drawdown_pct", "Kill switch: drawdown from peak (%)", "Limits", "float", 5, 50, 1),
     Field("risk.daily_profit_target_pct", "Daily profit target (%) - stop for the day", "Limits", "float", 0, 20, 0.5,
-          help="0 = off. When equity is up this much today, no new trades until tomorrow."),
+          help="0 = off. A cap, not a quota: when equity is up this much today, no new trades until tomorrow."),
+    Field("risk.profit_half_risk_at_pct", "Halve risk once the day is up (%)", "Limits", "float", 0, 20, 0.5,
+          help="0 = off. Protects a good day: after this much profit, new trades use half the risk."),
+    Field("risk.max_trades_per_day", "Max new trades per day", "Limits", "int", 1, 50, 1),
+    Field("risk.loss_streak", "Losses in a row (today) that trigger the rule below", "Limits", "int", 0, 10, 1,
+          help="0 = off. Breakeven exits don't count as losses."),
+    Field("risk.loss_streak_action", "...then", "Limits", "choice", choices=["stop_day", "half_risk"],
+          help="stop_day: done for today. half_risk: keep trading at half risk until a win."),
+    Field("risk.max_spread_stop_pct", "Cost filter: skip if spread > this % of the stop", "Limits", "float", 0, 50, 1,
+          help="0 = off. On M5 the spread can eat a big part of a small stop - those trades lose on average."),
     Field("exits.default_stop_atr", "Default stop (x ATR)", "Stops & targets", "float", 0.5, 5, 0.1),
     Field("exits.default_target_atr", "Default target (x ATR)", "Stops & targets", "float", 0.5, 10, 0.1),
     Field("exits.min_stop_atr", "Tightest stop (x ATR)", "Stops & targets", "float", 0.3, 5, 0.1),
@@ -239,7 +271,16 @@ MODE_FIELDS: list[Field] = [
           help="Ranging markets: fade a poke outside the Bollinger band back to the middle."),
     Field("signals.momentum_breakout", "Momentum breakout signal", "Signals", "bool",
           help="Trending/volatile markets: strong close beyond the 20-candle high/low."),
+    Field("signals.liquidity_sweep", "Liquidity sweep signal (SMC)", "Signals", "bool",
+          help="A previous-day/session high or low (or equal highs/lows) is swept and the candle closes back "
+               "inside with a rejection wick. Stop beyond the wick, target the opposite liquidity. Off by default: "
+               "in the first 60-day backtest it lost about 0.5R per trade (73 trades)."),
+    Field("signals.smc_filter", "SMC location filter", "Signals", "bool",
+          help="Skip any signal whose path is blocked by unswept liquidity (PDH/PDL, session highs/lows, "
+               "equal highs/lows) or an opposite order block closer than the stop distance."),
     Field("signals.session_filter", "Gold/forex only in London + NY hours", "Signals", "bool"),
+    Field("signals.htf_trend_filter", "Only trade with the H1 trend", "Signals", "bool",
+          help="Longs only when H1 price > EMA50 and EMA20 > EMA50 (shorts the opposite). Flat H1 = no trade."),
     Field("adaptive.enabled", "Strategy switching by market regime", "Self-learning", "bool",
           help="Learns which strategy works in trend / range / volatile markets for this account; "
                "switches losers off (with probation later) and halves risk on weak ones."),
@@ -355,9 +396,30 @@ class SettingsStore:
         row = db.one("SELECT data FROM settings_versions ORDER BY id DESC LIMIT 1")
         if row:
             self.current = validate(json.loads(row["data"]))
+            self._upgrade_defaults(json.loads(row["data"]))
         else:
             self.current = validate(copy.deepcopy(DEFAULTS))
             self._persist(self.current, "default")
+            db.kv_set("settings_defaults_version", DEFAULTS_VERSION)
+
+    def _upgrade_defaults(self, saved: dict) -> None:
+        """Saved settings override code defaults, so when the defaults change in a way you agreed
+        to, apply them once. The old version stays in Change history and can be reverted."""
+        version = self.db.kv_get("settings_defaults_version", 1)
+        if version >= DEFAULTS_VERSION:
+            return
+        data = copy.deepcopy(self.current)
+        if version < 2:
+            # v2: the agreed mode table (daily caps, trade limits, streak rule, cost/H1 filters),
+            # XM spreads as reported by the user, and a total AI budget that now includes Sonnet.
+            data["modes"] = copy.deepcopy(MODE_DEFAULTS)
+            for sym, old in (("XAU_USD", 35), ("EUR_USD", 16), ("GBP_USD", 21)):
+                if data["broker"].get(f"spread_{sym}") == old:
+                    data["broker"][f"spread_{sym}"] = DEFAULTS["broker"][f"spread_{sym}"]
+            if data["ai"]["monthly_budget_usd"] <= 2.0:
+                data["ai"]["monthly_budget_usd"] = DEFAULTS["ai"]["monthly_budget_usd"]
+        self.save(data, f"upgrade:defaults-v{DEFAULTS_VERSION}")
+        self.db.kv_set("settings_defaults_version", DEFAULTS_VERSION)
 
     def _persist(self, data: dict, source: str) -> None:
         self.db.execute("INSERT INTO settings_versions(at, source, data) VALUES (?,?,?)",

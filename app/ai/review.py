@@ -111,9 +111,16 @@ async def weekly_playbook(ai: AIClient, db: DB, cfg: dict, mode: str, scorecard_
         return f"[{label}] playbook: no lessons this week, unchanged."
     user = (f"{_style(mode)}\n\nCURRENT PLAYBOOK:\n{current_playbook(db, mode)}\n\nTHIS WEEK'S LESSONS:\n" +
             "\n".join(f"- {l}" for l in lessons[:30]) + f"\n\nSCORECARD:\n{scorecard_text}")
-    res = await ai.call_json(cfg, f"weekly_playbook:{mode}", WEEKLY_SYSTEM, user, PLAYBOOK_SCHEMA, max_tokens=800)
+    # Sonnet writes the playbook (3 calls a week, the rules every gate call reads);
+    # Haiku is the fallback when Sonnet is off or over its budget.
+    source = "weekly_sonnet"
+    res = await ai.call_json(cfg, f"weekly_playbook:{mode}", WEEKLY_SYSTEM, user, PLAYBOOK_SCHEMA,
+                             max_tokens=6000, tier="strong", effort="medium")
+    if res.unavailable:
+        source = "weekly_haiku"
+        res = await ai.call_json(cfg, f"weekly_playbook:{mode}", WEEKLY_SYSTEM, user, PLAYBOOK_SCHEMA, max_tokens=800)
     if not res.ok or not res.data:
         return f"[{label}] playbook skipped: {res.error}"
     db.execute("INSERT INTO playbook_versions(mode, at, content, source) VALUES (?,?,?,?)",
-               (mode, iso(), res.data["playbook"][:4000], "weekly_ai"))
-    return f"<b>[{label}] playbook updated</b>\n{res.data['changes']}"
+               (mode, iso(), res.data["playbook"][:4000], source))
+    return f"<b>[{label}] playbook updated</b> ({source.split('_')[1].title()})\n{res.data['changes']}"

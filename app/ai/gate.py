@@ -35,6 +35,9 @@ signal only. You cannot change its side. Judge it against THIS account's trading
 
 Judge:
 - Does the recent price action support the signal, or is it chasing/late/into resistance?
+- Smart-money view: is it buying into unswept liquidity above / an opposite order block, or
+  entering after liquidity was taken (a sweep) with room to the next pool? Prefer trades that
+  start near a fresh FVG/OB in their favour and have clear liquidity to target.
 - Do upcoming high-impact events or the news digest argue against it?
 - Does this account's playbook (its rules and lessons) say to avoid this setup?
 - Does it fit the account's style (e.g. a scalper wants quick momentum; a standard trader wants A-grade setups)?
@@ -42,7 +45,8 @@ Judge:
 
 Rules:
 - Prefer SKIP when evidence is mixed. Skipping costs nothing; bad trades cost money.
-- stop_atr and target_atr within the account's limits given below.
+- stop_atr and target_atr within the account's limits given below. If a structure stop/target is
+  given, use it unless the levels clearly argue otherwise.
 - leverage is only a suggestion; risk is fixed by code.
 - confidence is your probability (0-1) that the trade reaches its target before its stop.
 - reason: one short sentence a human can read on a dashboard.
@@ -67,7 +71,8 @@ def _candles_summary(candles: list[dict], decimals: int, tf: str = "15m", n: int
 
 def build_prompt(inst: Instrument, sig: Signal, candles: list[dict], account: dict,
                  positions: list[dict], recent_trades: list[dict], scorecard_line: str,
-                 playbook: str, news: dict, session: str, spread: float | None, cfg: dict) -> str:
+                 playbook: str, news: dict, session: str, spread: float | None, cfg: dict,
+                 smc_text: str = "") -> str:
     d = inst.decimals
     mode = cfg["mode"]
     e = cfg["exits"]
@@ -97,11 +102,15 @@ type: {sig.type}
 market regime: {sig.regime}
 strategy track record in this regime: {sig.context.get('adaptive', 'no history')}
 why: {sig.note}
+{f"structure stop {sig.stop_atr} ATR" + (f", target {sig.target_atr} ATR (next liquidity)" if sig.target_atr else "") if sig.stop_atr else ""}
 price: {sig.price:.{d}f}  ATR(14,{cfg['timeframe']}): {sig.atr:.{d}f}  spread: {spread if spread is not None else 'n/a'}
 session now: {session}
 
 PRICE ACTION
 {_candles_summary(candles, d, cfg['timeframe'])}
+
+KEY LEVELS (SMC: liquidity, sweeps, FVG / order blocks; distance from price in ATR)
+{smc_text or 'n/a'}
 
 ACCOUNT
 equity ${account['equity']:.2f}, margin used {account['margin_used_pct']:.0f}%, status {account['status']}
@@ -144,6 +153,40 @@ def validate_reply(data: dict, sig: Signal, min_conf: float) -> tuple[bool, str]
 
 async def ask(ai: AIClient, cfg: dict, prompt: str) -> AIResult:
     return await ai.call_json(cfg, f"gate:{cfg['mode']}", SYSTEM, prompt, SCHEMA, max_tokens=400)
+
+
+SECOND_SYSTEM = SYSTEM.replace(
+    "A coded signal has fired. Decide TAKE or SKIP",
+    "A coded signal has fired and a first reviewer approved it. You are the senior reviewer giving a "
+    "SECOND OPINION because this trade is high-stakes (large risk, the 0.01-lot minimum forcing extra risk, "
+    "or a borderline first approval). Decide TAKE or SKIP") + """
+As the senior reviewer: don't just agree with the first reviewer. Look for the reason this trade fails -
+late entry, nearby opposite level, news, a regime the strategy is bad in, a playbook rule it breaks.
+TAKE only if you would put real money on it at this risk."""
+
+
+def needs_second_opinion(cfg: dict, risk_pct: float, min_lot_forced: bool, confidence: float) -> str | None:
+    """Why this trade deserves Sonnet's look, or None. Only Haiku TAKEs reach here -
+    a SKIP costs nothing, so it never needs a second opinion."""
+    a = cfg["ai"]
+    if not a.get("second_opinion", True):
+        return None
+    if min_lot_forced:
+        return "0.01 lot forces risk above the normal %"
+    if risk_pct >= a["second_opinion_risk_pct"]:
+        return f"risk {risk_pct:.1f}% >= {a['second_opinion_risk_pct']:g}%"
+    if confidence < a["min_confidence"] + 0.1:
+        return f"borderline approval ({confidence:.2f})"
+    return None
+
+
+async def second_opinion(ai: AIClient, cfg: dict, prompt: str, first: dict, why: str,
+                         risk_pct: float, risk_usd: float) -> AIResult:
+    extra = (f"\nFIRST REVIEWER (Haiku) said TAKE, confidence {float(first.get('confidence', 0)):.2f}: "
+             f"{first.get('reason', '')}\n"
+             f"THIS TRADE RISKS {risk_pct:.1f}% of equity (${risk_usd:.2f}). Why you are asked: {why}.\n")
+    return await ai.call_json(cfg, f"second_opinion:{cfg['mode']}", SECOND_SYSTEM, prompt + extra, SCHEMA,
+                              max_tokens=3000, tier="strong", effort="low")
 
 
 def dumps(data: dict | None) -> str | None:

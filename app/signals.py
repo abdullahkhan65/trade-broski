@@ -11,6 +11,12 @@ Signals:
                     RSI and closed back inside: fade it back towards the middle.
 * momentum_breakout - (trending/volatile market) a strong candle closes beyond the
                     highest high / lowest low of the last 20 candles, with the trend.
+* liquidity_sweep - (SMC) a previous-day / session high or low, or equal highs/lows, is
+                    swept for the first time and the candle closes back inside with a
+                    rejection wick. Stop beyond the sweep wick, target the opposite liquidity.
+
+SMC location filter (smc.py): drop a signal whose path is blocked by unswept liquidity
+or an opposite order block closer than 1x the stop distance.
 
 Market regime (detect_regime) labels every candle as trend / range / volatile /
 mixed from ADX and ATR. Each signal is tagged with it, and the adaptive layer
@@ -27,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from . import indicators as ind
+from . import smc
 from .instruments import Instrument
 from .sessions import asian_range_bounds, in_trading_session, is_forex_like
 
@@ -49,6 +56,8 @@ class Signal:
     note: str
     context: dict = field(default_factory=dict)
     regime: str = ""
+    stop_atr: float | None = None      # structure-based stop / target (x ATR), if the strategy has one
+    target_atr: float | None = None
 
 
 @dataclass
@@ -253,6 +262,70 @@ def momentum_breakout(inst: Instrument, candles: list[dict], cfg: dict, atr: flo
     return None
 
 
+SWEEP_LEVELS = ("PDH", "PDL", "Asian", "London", "New York", "equal")
+SWEEP_MAX_DEPTH_ATR = 1.0      # deeper than this is a breakout, not a sweep
+SWEEP_CLOSE_SHARE = 0.6        # close in the top 40% (long) / bottom 40% (short) of the candle
+SWEEP_STOP_PAD_ATR = 0.1
+
+
+def liquidity_sweep(inst: Instrument, candles: list[dict], cfg: dict, atr: float,
+                    levels: list[smc.Level]) -> Signal | None:
+    last = candles[-1]
+    rng = last["h"] - last["l"]
+    if rng <= 0:
+        return None
+    e = cfg["exits"]
+    d = inst.decimals
+    for lv in levels:
+        if not lv.name.startswith(SWEEP_LEVELS) or lv.swept_t != last["t"]:
+            continue                       # only the FIRST sweep of a strong level, on this candle
+        if lv.kind == "low":
+            side, ok = "LONG", last["c"] > lv.price and (last["c"] - last["l"]) / rng >= SWEEP_CLOSE_SHARE
+            depth, stop = lv.price - last["l"], last["l"] - SWEEP_STOP_PAD_ATR * atr
+        else:
+            side, ok = "SHORT", last["c"] < lv.price and (last["h"] - last["c"]) / rng >= SWEEP_CLOSE_SHARE
+            depth, stop = last["h"] - lv.price, last["h"] + SWEEP_STOP_PAD_ATR * atr
+        if not ok or depth > SWEEP_MAX_DEPTH_ATR * atr:
+            continue
+        stop_atr = abs(last["c"] - stop) / atr
+        if stop_atr > e["max_stop_atr"]:
+            continue                       # structure stop too wide for this account
+        stop_atr = max(stop_atr, e["min_stop_atr"])
+        tgt = smc.liquidity_target(side, last["c"], stop_atr * e["min_reward_risk"] * atr,
+                                   [x for x in levels if x is not lv])
+        target_atr = abs(tgt.price - last["c"]) / atr if tgt else None
+        note = (f"Swept {lv.name} {lv.price:.{d}f} and closed back {'above' if side == 'LONG' else 'below'}"
+                + (f"; target {tgt.name} {tgt.price:.{d}f}" if tgt else ""))
+        return Signal(inst.symbol, side, "liquidity_sweep", last["c"], atr, last["t"], note,
+                      {"level": lv.name, "level_price": lv.price}, stop_atr=round(stop_atr, 2),
+                      target_atr=round(target_atr, 2) if target_atr else None)
+    return None
+
+
+H1_MIN_BARS = 55
+
+
+def htf_trend(candles: list[dict], cfg: dict) -> str | None:
+    """H1 trend built from the M5/M15 candles: 'up' (close > EMA50 and EMA20 > EMA50),
+    'down' (the opposite) or 'flat'. None if there isn't enough history to tell."""
+    per_hour = 3600 // _tf(cfg)
+    hours: dict[int, list[dict]] = {}
+    for c in candles:
+        hours.setdefault(c["t"] // 3600, []).append(c)
+    closes = [rows[-1]["c"] for _, rows in sorted(hours.items()) if len(rows) >= per_hour]  # complete hours only
+    if len(closes) < H1_MIN_BARS:
+        return None
+    fast = ind.ema(closes, cfg["signals"]["ema_fast"])[-1]
+    slow = ind.ema(closes, cfg["signals"]["ema_slow"])[-1]
+    if fast is None or slow is None:
+        return None
+    if closes[-1] > slow and fast > slow:
+        return "up"
+    if closes[-1] < slow and fast < slow:
+        return "down"
+    return "flat"
+
+
 def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | None = None,
              news_bias: dict | None = None, disabled: set[str] | None = None,
              atr_floor: float | None = None) -> tuple[list[Signal], str]:
@@ -287,9 +360,34 @@ def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | N
         sig = momentum_breakout(inst, candles, cfg, f.atr, regime)
         if sig:
             out.append(sig)
+    levels = smc.key_levels(candles, f.atr) if (s.get("liquidity_sweep") or s.get("smc_filter")) else []
+    if s.get("liquidity_sweep") and "liquidity_sweep" not in disabled:
+        sig = liquidity_sweep(inst, candles, cfg, f.atr, levels)
+        if sig:
+            out.append(sig)
     for sig in out:
         sig.regime = regime.name if regime else "unknown"
     # if two signals disagree on direction, take neither
     if len({x.side for x in out}) > 1:
         return [], "conflicting signals"
+    if out and s.get("htf_trend_filter"):
+        trend = htf_trend(candles, cfg)
+        if trend is not None:
+            want = {"up": "LONG", "down": "SHORT"}.get(trend)
+            if out[0].side != want:
+                return [], f"{out[0].side.lower()} signal against the H1 trend ({trend})"
+            for sig in out:
+                sig.note += f"; with the H1 trend ({trend})"
+    if out and s.get("smc_filter"):
+        zs = smc.zones(candles, f.atr)
+        e = cfg["exits"]
+        kept, why = [], ""
+        for sig in out:
+            stop_dist = (sig.stop_atr or min(max(e["default_stop_atr"], e["min_stop_atr"]), e["max_stop_atr"])) * f.atr
+            why = smc.location_check(sig.side, sig.price, stop_dist, levels, zs, inst.decimals) or ""
+            if not why:
+                kept.append(sig)
+        if not kept:
+            return [], f"SMC: {why}"
+        out = kept
     return out, ""

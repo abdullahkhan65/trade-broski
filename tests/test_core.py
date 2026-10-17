@@ -19,7 +19,9 @@ SETTINGS = validate(DEFAULTS)
 
 
 def cfg(mode="standard"):
-    return cfg_for(validate(DEFAULTS), mode)
+    c = cfg_for(validate(DEFAULTS), mode)
+    c["broker"]["spread_EUR_USD"] = 16    # tests below were written around a 1.6-pip spread
+    return c
 
 
 @pytest.fixture
@@ -62,10 +64,10 @@ def test_short_pnl_sign():
 def test_lots_floor_to_step_and_risk_within_budget():
     o = risk.size_order(INSTRUMENTS["EUR_USD"], cfg("standard"), "LONG", 1.1000, 0.0008, 250.0, 0.0)
     assert isinstance(o, risk.Order)
-    assert o.lots == 0.02                     # $2.50 budget / $120 per lot-stop = 0.0208 -> 0.02
-    assert o.risk_usd <= 2.5 + 1e-9
-    assert o.units == pytest.approx(2000)
-    assert o.margin == pytest.approx(notional_usd(INSTRUMENTS["EUR_USD"], 2000, 1.1) / 1000)
+    assert o.lots == 0.01                     # 0.75%: $1.875 budget / $120 per lot-stop = 0.0156 -> 0.01
+    assert o.risk_usd <= 1.875 + 1e-9
+    assert o.units == pytest.approx(1000)
+    assert o.margin == pytest.approx(notional_usd(INSTRUMENTS["EUR_USD"], 1000, 1.1) / 1000)
 
 
 def test_min_lot_rules_per_mode():
@@ -80,7 +82,7 @@ def test_min_lot_rules_per_mode():
 
 
 def test_ai_cannot_exceed_caps():
-    c = cfg("standard")
+    c = cfg("moderate")
     o = risk.size_order(INSTRUMENTS["EUR_USD"], c, "LONG", 1.1, 0.002, 250.0, 0.0, stop_atr=0.1, target_atr=0.1)
     assert isinstance(o, risk.Order)
     assert abs(o.entry - o.stop) == pytest.approx(c["exits"]["min_stop_atr"] * 0.002)
@@ -113,8 +115,10 @@ def test_loss_limits_and_daily_target():
     assert risk.account_limit_status(s, 200, 250, 250, 250)[0] == "halted"
     assert risk.account_limit_status(s, 234, 250, 240, 250)[0] == "paused_weekly"
     assert risk.account_limit_status(s, 242, 250, 250, 248)[0] == "paused_daily"
-    assert risk.account_limit_status(s, 260, 260, 250, 250) is None            # standard has no profit target
-    assert risk.account_limit_status(a, 258, 258, 250, 250)[0] == "target_hit"  # +3.2% >= 3%
+    assert risk.account_limit_status(s, 253, 253, 250, 250) is None            # +1.2% < standard's 1.5%
+    assert risk.account_limit_status(s, 254, 254, 250, 250)[0] == "target_hit"  # +1.6% >= 1.5%
+    assert risk.account_limit_status(a, 258, 258, 250, 250) is None            # +3.2% < aggressive's 5%
+    assert risk.account_limit_status(a, 263, 263, 250, 250)[0] == "target_hit"
 
 
 # ------------------------------------------------------------------- broker
@@ -222,10 +226,10 @@ def test_swap_points_triple_wednesday(setup):
 def test_halve_and_min_lot_close(setup):
     db, prices, broker, _ = setup
     o = _open(broker, prices, "moderate", "EUR_USD", "LONG", 1.1, 1.10016, 0.0008)
-    assert o.lots == 0.03
+    assert o.lots == 0.02
     broker.close_at_market(cfg("moderate"), broker.positions("moderate")[0], "weekend halve", fraction=0.5)
     p = broker.positions("moderate")[0]
-    assert p["lots"] in (0.01, 0.02) and p["weekend_halved"] == 1          # half of 0.03, rounded to the 0.01 step
+    assert p["lots"] == 0.01 and p["weekend_halved"] == 1
     db.execute("UPDATE positions SET lots=0.01, units=1000")
     broker.close_at_market(cfg("moderate"), broker.positions("moderate")[0], "weekend halve", fraction=0.5)
     assert broker.positions("moderate") == []                              # 0.01 can't be halved
@@ -259,7 +263,7 @@ def test_modes_differ_and_reset(setup):
     store.save(data)
     assert store.cfg("moderate")["risk"]["risk_per_trade_pct"] == 2.5
     store.reset_mode("moderate")
-    assert store.cfg("moderate")["risk"]["risk_per_trade_pct"] == 1.5
+    assert store.cfg("moderate")["risk"]["risk_per_trade_pct"] == 1.0
 
 
 def test_bad_choice_rejected():

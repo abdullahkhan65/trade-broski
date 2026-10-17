@@ -11,6 +11,7 @@ import json
 import logging
 import secrets
 import sys
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,7 +23,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import adaptive, scorecard
+from . import adaptive, scorecard, smc
 from .ai.client import AIClient
 from .ai.review import current_playbook, daily_review, weekly_playbook
 from .alerts import telegram
@@ -336,11 +337,17 @@ def _positions(account: str | None) -> list[dict]:
 def _budget() -> dict:
     cfg = store.cfg("standard")
     month = datetime.now(timezone.utc).strftime("%Y-%m")
-    by_purpose = db.all("SELECT purpose, COUNT(*) calls, SUM(input_tokens) tin, SUM(output_tokens) tout, "
-                        "SUM(cost_usd) cost FROM cost_log WHERE at >= ? GROUP BY purpose", (month,))
-    return {"month_spend": ai.month_spend(), "monthly_budget": cfg["ai"]["monthly_budget_usd"],
-            "calls_today": ai.calls_today(), "max_calls_per_day": cfg["ai"]["max_calls_per_day"],
-            "blocked": ai.budget_block(cfg), "by_purpose": by_purpose, "model": ENV.ai_model}
+    by_purpose = db.all("SELECT purpose, model, COUNT(*) calls, SUM(input_tokens) tin, SUM(output_tokens) tout, "
+                        "SUM(cost_usd) cost FROM cost_log WHERE at >= ? GROUP BY purpose, model ORDER BY cost DESC",
+                        (month,))
+    a = cfg["ai"]
+    return {"month_spend": ai.month_spend(), "monthly_budget": a["monthly_budget_usd"],
+            "calls_today": ai.calls_today(), "max_calls_per_day": a["max_calls_per_day"],
+            "blocked": ai.budget_block(cfg), "by_purpose": by_purpose, "model": ENV.ai_model,
+            "strong_model": ENV.ai_strong_model, "strong_enabled": a["strong_enabled"],
+            "strong_spend": ai.month_spend("strong"), "strong_budget": a["strong_budget_usd"],
+            "strong_calls_today": ai.calls_today("strong"), "strong_calls_per_day": a["strong_calls_per_day"],
+            "strong_blocked": ai.budget_block(cfg, "strong")}
 
 
 @app.get("/api/state")
@@ -367,7 +374,7 @@ async def api_stream(request: Request, account: str = "standard", _: str = Depen
         while not await request.is_disconnected():
             pos = [{"id": p["id"], "price": p["price"], "profit": p["profit"], "stop": p["stop"]}
                    for p in _positions(account)]
-            payload = {"quotes": _quotes(account), "account": _account(account),
+            payload = {"ts": time.time(), "quotes": _quotes(account), "account": _account(account),
                        "accounts": {m: _account(m) for m in MODES}, "positions": pos}
             yield f"data: {json.dumps(payload)}\n\n"
             await asyncio.sleep(1)
@@ -380,6 +387,18 @@ def api_candles(symbol: str, tf: str = "15m", n: int = 300, _: str = Depends(aut
     if symbol not in INSTRUMENTS or tf not in ("5m", "15m"):
         raise HTTPException(404)
     return load_candles(db, symbol, min(n, 2000), tf)
+
+
+@app.get("/api/levels")
+def api_levels(symbol: str, tf: str = "15m", _: str = Depends(auth)) -> dict:
+    """SMC map for the chart: day/session levels, liquidity pools, FVGs and order blocks."""
+    if symbol not in INSTRUMENTS or tf not in ("5m", "15m"):
+        raise HTTPException(404)
+    candles = load_candles(db, symbol, 1200 if tf == "5m" else 600, tf)
+    atr = engine.current_atr(symbol, tf)
+    if not candles or not atr:
+        return {"levels": [], "zones": []}
+    return smc.to_json(candles, atr)
 
 
 @app.get("/api/equity")

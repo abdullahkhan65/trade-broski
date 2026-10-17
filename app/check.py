@@ -76,7 +76,8 @@ async def claude() -> str:
         raise RuntimeError("ANTHROPIC_API_KEY not set")
     client = anthropic.AsyncAnthropic(api_key=ENV.anthropic_api_key)
     m = await client.models.retrieve(ENV.ai_model)
-    return f"key works, model {m.id} available"
+    m2 = await client.models.retrieve(ENV.ai_strong_model)
+    return f"key works, models {m.id} + {m2.id} available"
 
 
 async def telegram() -> str:

@@ -154,3 +154,58 @@ def account_limit_status(cfg: dict, equity: float, peak: float, day_start: float
     if target and day_start > 0 and (equity - day_start) / day_start * 100 >= target:
         return "target_hit", f"daily profit target reached: +{100 * (equity - day_start) / day_start:.1f}%"
     return None
+
+
+def day_rules(cfg: dict, day_pnl_pct: float, trades_today: int, losses_in_row: int
+              ) -> tuple[str | None, float, str]:
+    """Per-day discipline from the mode table. Returns (block_reason, risk_mult, note).
+    - max trades per day;
+    - N losses in a row today -> stop for the day, or half risk until a win;
+    - once the day is up `profit_half_risk_at_pct`, new trades use half risk.
+    (The daily profit target / loss limit themselves are in account_limit_status.)"""
+    r = cfg["risk"]
+    cap = r.get("max_trades_per_day", 0)
+    if cap and trades_today >= cap:
+        return f"max {cap} trades today reached", 1.0, ""
+    mult, notes = 1.0, []
+    n = r.get("loss_streak", 0)
+    if n and losses_in_row >= n:
+        if r.get("loss_streak_action") == "stop_day":
+            return f"{losses_in_row} losses in a row today - done for the day", 1.0, ""
+        mult *= 0.5
+        notes.append(f"{losses_in_row} losses in a row: half risk")
+    h = r.get("profit_half_risk_at_pct", 0)
+    if h and day_pnl_pct >= h:
+        mult *= 0.5
+        notes.append(f"day is +{day_pnl_pct:.1f}%: half risk to protect it")
+    return None, mult, "; ".join(notes)
+
+
+def spread_check(cfg: dict, spread: float, atr: float, stop_atr: float | None = None) -> str | None:
+    """Cost filter: skip if the spread is too big a share of the stop distance
+    (the strategy's structure stop if it has one, else the default stop)."""
+    cap = cfg["risk"].get("max_spread_stop_pct", 0)
+    if not cap or atr <= 0:
+        return None
+    s_mult, _ = clamp_exit_multiples(cfg, stop_atr, None)
+    pct = 100 * spread / (s_mult * atr)
+    if pct > cap:
+        return f"spread is {pct:.0f}% of the stop (max {cap:g}%)"
+    return None
+
+
+def is_loss(trade: dict) -> bool:
+    """Breakeven exits pay the spread so they're slightly negative - they don't count as losses."""
+    return (trade.get("pnl_usd") or 0) < 0 and not str(trade.get("exit_reason") or "").startswith("breakeven")
+
+
+def losses_in_row(trades_newest_first: list[dict]) -> int:
+    n = 0
+    for t in trades_newest_first:
+        if is_loss(t):
+            n += 1
+        elif str(t.get("exit_reason") or "").startswith("breakeven"):
+            continue           # a scratch neither breaks nor extends the streak
+        else:
+            break
+    return n

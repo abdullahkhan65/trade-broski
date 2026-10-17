@@ -39,7 +39,7 @@ from .settings_store import DEFAULTS, MODE_LABELS, MODES, cfg_for, validate
 from .signals import evaluate
 
 HIST = ROOT / "data" / "history"
-WINDOW = 400                      # candles passed to the signal engine per step
+WINDOW = 600                      # candles passed to the signal engine per step (M5: ~2 days, for PDH/PDL)
 
 
 # ------------------------------------------------------------------ data
@@ -134,19 +134,26 @@ def simulate(inst: Instrument, candles: list[dict], signals: dict[int, object], 
     pos: dict | None = None
     pending = None
     day, day_start, day_blocked = None, equity, False
+    fills_today, closed_today = 0, []      # for the mode's day rules (newest last)
 
     for i in range(max(start, 1), end):
         c = candles[i]
         d = c["t"] // 86400
         if d != day:
             day, day_start, day_blocked = d, equity, False
+            fills_today, closed_today = 0, []
         # 1) fill a pending entry at this candle's open
         if pending and pos is None:
             sig, pending = pending, None
             entry = c["o"] + half if sig.side == "LONG" else c["o"] - half
-            o = risk.size_order(inst, cfg, sig.side, entry, sig.atr, equity, 0.0)
+            block, mult, _ = risk.day_rules(cfg, 100 * (equity - day_start) / day_start if day_start > 0 else 0.0,
+                                            fills_today, risk.losses_in_row(closed_today[::-1]))
+            block = block or risk.spread_check(cfg, 2 * half, sig.atr, sig.stop_atr)
+            o = risk.Rejection(block) if block else risk.size_order(inst, cfg, sig.side, entry, sig.atr, equity, 0.0,
+                                                                    sig.stop_atr, sig.target_atr, risk_mult=mult)
             if isinstance(o, risk.Order):
                 pos = {"o": o, "sig": sig, "t": c["t"], "stop": o.stop}
+                fills_today += 1
             else:
                 key = re.sub(r"[\d.]+", "N", o.reason.split(" ($")[0].split(";")[0])[:50]
                 skipped[key] = skipped.get(key, 0) + 1
@@ -182,6 +189,7 @@ def simulate(inst: Instrument, candles: list[dict], signals: dict[int, object], 
                                "r": net / o.risk_usd, "reason": reason,
                                "opened": datetime.fromtimestamp(pos["t"], tz=timezone.utc).isoformat(),
                                "closed": datetime.fromtimestamp(c["t"], tz=timezone.utc).isoformat()})
+                closed_today.append({"pnl_usd": net, "exit_reason": reason})
                 pos = None
             else:
                 be = cfg["exits"]["breakeven_at_r"]

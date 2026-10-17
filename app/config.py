@@ -37,6 +37,9 @@ class Env:
     ai_model: str
     ai_price_in_per_m: float
     ai_price_out_per_m: float
+    ai_strong_model: str
+    ai_strong_price_in_per_m: float
+    ai_strong_price_out_per_m: float
 
     telegram_bot_token: str
     telegram_chat_id: str
@@ -71,6 +74,9 @@ ENV = Env(
     ai_model=os.getenv("AI_MODEL", "claude-haiku-5-5"),
     ai_price_in_per_m=_float("AI_PRICE_IN_PER_M", 0.10),
     ai_price_out_per_m=_float("AI_PRICE_OUT_PER_M", 0.50),
+    ai_strong_model=os.getenv("AI_STRONG_MODEL", "claude-sonnet-5-5"),
+    ai_strong_price_in_per_m=_float("AI_STRONG_PRICE_IN_PER_M", 2.0),
+    ai_strong_price_out_per_m=_float("AI_STRONG_PRICE_OUT_PER_M", 10.0),
     telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
     telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
     dashboard_user=os.getenv("DASHBOARD_USER", "admin"),

@@ -35,6 +35,7 @@ Filters applied to every signal:
 - **News spike**: the last candle's range is more than 3× ATR.
 - **Session**: gold/forex only trade during London (08:00–17:00 London time) or New York (08:00–17:00 NY time) hours. Daylight saving is handled.
 - If two signals disagree on direction, neither is taken.
+- **H1 trend filter** (Standard by default): hourly candles are built from the account's own candles. Longs only when the H1 close is above EMA50 and EMA20 is above EMA50; shorts the opposite. A flat H1 means no trade.
 
 ## 3. Pre-checks (free; run *before* paying for AI)
 Any of these cancels the trade, and the reason is logged in the dashboard's decisions table:
@@ -45,7 +46,9 @@ Any of these cancels the trade, and the reason is logged in the dashboard's deci
 5. Portfolio rules: already in this instrument, max positions reached, or max USD forex positions reached.
 6. Cooldown: Haiku skipped this signal type on this instrument within the last 2h.
 7. No fresh live price (more than 2 minutes old).
-8. A dry-run size check fails, e.g. the margin cap would be breached.
+8. **Day rules**: the mode's max trades per day is reached, or its losing streak says "done for the day". These rules can also halve risk: after 2 losses in a row (Moderate/Aggressive), or once the day is up +3% (Aggressive).
+9. **Cost filter**: the spread is more than X% of the stop (Aggressive: 15%).
+10. A dry-run size check fails, e.g. the margin cap would be breached.
 
 ## 4. AI gate (Claude Haiku 5.5, about $0.0004 per call)
 The prompt is ≤ 4k tokens. It contains the signal, the last 48 candles in compact form, ATR, spread, session, account and margin, open positions, the last 10 trades, the scorecard line for this signal, **the news digest for this instrument, the high/medium-impact events in the next 4h, the latest relevant headlines** and the current playbook.
@@ -63,6 +66,8 @@ Then:
 
 Thinking is switched off and effort is low. These are short judgement calls, and thinking tokens would be billed and could eat the 400-token reply cap.
 
+**Sonnet second opinion.** When Haiku approves a high-stakes trade, Claude Sonnet 5.5 reviews it with the same prompt plus Haiku's verdict and the exact risk. A trade is high-stakes when the 0.01-lot minimum forces extra risk, the risk is ≥ 1.5%, or Haiku's approval is borderline. Sonnet is told to look for the reason the trade fails, and it can veto it. It costs about $0.008 per call, within its own budget and daily cap. See ARCHITECTURE.md → "Two AI models".
+
 ## 5. Risk engine: XM lot sizing (code, the AI can't override it)
 ```
 risk $          = equity × the account's risk %
@@ -77,7 +82,7 @@ Example, Standard account ($250, 1%): EURUSD ATR 8 pips → stop 12 pips → $12
 Gold on M15 (ATR ~$8 → stop $12): 0.01 lot already risks $12 = 4.8%. Standard **skips** it, Moderate (≤ 3%) skips it, Aggressive (≤ 5%) takes 0.01 lot. See SETTINGS.md → "The 0.01-lot problem".
 
 ## 6. Paper broker (XM Standard simulation)
-- **Quotes:** the feed's mid price, with XM's spread in points around it (GOLD 35, EURUSD 16, GBPUSD 21, BTCUSD 4000). If the live spread is wider, the live one is used. Buys fill at the ask, sells at the bid. No commission (XM Standard).
+- **Quotes:** the feed's mid price, with XM's spread in points around it (GOLD 50, EURUSD 23, GBPUSD 28, BTCUSD 4000). If the live spread is wider, the live one is used. Buys fill at the ask, sells at the bid. No commission (XM Standard).
 - **Market hours:** gold and forex quotes **freeze at Friday's close** and weekend candles are dropped, as on MT5. Stops aren't checked while the market is closed, so a held position takes the Monday gap.
 - **Stops:** checked every 3 seconds against bid/ask. **If price gapped through the stop, the fill is the first price seen**, marked "stop loss (gap)". Targets fill at the target price exactly, never better.
 - **Breakeven:** per mode, at +X R the stop moves to the entry price ("breakeven stop" on exit).
@@ -99,7 +104,7 @@ Gold on M15 (ATR ~$8 → stop $12): 0.01 lot already risks $12 = 4.8%. Standard 
 Every candle is labelled from ADX (trend strength) and where ATR sits in its 20-day range:
 `volatile` (ATR in its top 10%), `trend` (ADX ≥ 25), `range` (ADX ≤ 20), otherwise `mixed`. Market Watch shows the label for each symbol.
 
-### Five strategies
+### Six strategies
 | Strategy | Fires in | Idea |
 |---|---|---|
 | `trend_pullback` | any | Pullback to the 20 EMA in a 50 EMA trend, RSI turns back |
@@ -107,6 +112,7 @@ Every candle is labelled from ADX (trend strength) and where ATR sits in its 20-
 | `news_momentum` | any | Strong AI news bias confirmed by price |
 | `range_reversion` | range, mixed | Poke outside a Bollinger band with stretched RSI, close back inside → fade to the middle |
 | `momentum_breakout` | trend, volatile | Strong candle closes beyond the 20-candle high/low, with the trend |
+| `liquidity_sweep` (SMC, **off by default**) | any | First sweep of PDH/PDL, a session high/low or equal highs/lows, closing back inside with a rejection wick. Stop beyond the wick, target the next opposite liquidity |
 
 ### Strategy switching (`app/adaptive.py`)
 Each trade is stored with its strategy and regime. For every (account, strategy, regime):
@@ -125,7 +131,43 @@ For each account, on the last 60 days (M15) or 30 days (M5) of history:
 The result appears in the 🧠 Learning tab, and the change is saved as a settings version (`tuner:<mode>`) you can revert. Haiku's prompt includes these tested defaults. Run it any time with "Run tuner now", or `python -m app.tuner --mode aggressive`.
 
 ### Playbook loop
-Daily, Haiku turns each account's trades and skipped signals into lessons. On Sunday it rewrites that account's playbook, which Haiku reads before every decision.
+Daily, Haiku turns each account's trades and skipped signals into lessons. On Sunday **Sonnet** rewrites each account's playbook from those lessons and the scorecard (falling back to Haiku if Sonnet is over budget). Haiku and Sonnet read the playbook before every decision.
+
+## 7b. Smart Money Concepts (`app/smc.py`)
+The bot codes SMC as objective rules, so it never relies on hand-drawn judgement:
+
+| Concept | Rule |
+|---|---|
+| **PDH / PDL** | High/low of the previous UTC day that has data (Friday's on Monday) |
+| **Session highs/lows** | Asian 00–07, London 07–12, New York 12–17 UTC; only once the session has finished |
+| **Liquidity pools** | Unswept swing highs/lows from the last 3 days (fractal: higher/lower than 3 candles each side). Swings within 0.1 ATR of each other merge into **equal highs/lows**, where stops cluster |
+| **Swept** | Price has traded through the level after it formed |
+| **Fair value gap** | Candle 1's high is below candle 3's low (bullish), or the mirror; size ≥ 0.15 ATR; dropped once fully filled |
+| **Order block** | The last opposite candle before a displacement candle (body ≥ 1 ATR) that breaks the last 10 candles' high/low; dropped once price closes through it |
+
+**How the bot uses it:**
+1. **Location filter (on by default):** skip any signal whose path is blocked by unswept liquidity or an opposite order block closer than the stop distance, e.g. buying 3 pips under an untouched PDH.
+2. **Context for the AI:** every gate prompt includes the 8 nearest levels and 4 nearest zones, with their distance in ATR. Haiku and Sonnet are told to prefer trades that start after liquidity was taken and have room to the next pool.
+3. **Chart:** levels are drawn as lines (gold = PDH/PDL and equal highs/lows, blue = sessions, faded ✓ = swept), and FVGs and OBs as shaded zones. You can toggle each on the chart.
+4. **`liquidity_sweep` strategy:** coded and tested, but off by default (see below).
+
+**First SMC backtest (18 Oct 2026; Standard and Moderate on 60 days of M15, Aggressive on 30 days of M5, XM spreads):**
+
+| | Without SMC | With the location filter | Sweep strategy alone |
+|---|---|---|---|
+| Total over all tests | −69R | **−57R** (fewer, slightly better trades) | −39R over 73 trades (≈ −0.5R per trade) |
+| Best case | | Aggressive BTC M5: +4.8R → **+8.5R** (+7.3%, 26 trades, 6% max drawdown) | |
+| Worst case | | Standard EURUSD: −0.8R → −4.7R | Moderate BTC: −23R over 44 trades |
+
+So the filter is on by default, and the sweep strategy is off until a longer test (2 years) shows an edge.
+
+**Bigger picture:** over 60 days, most of the older strategies lose after XM costs.
+- **Standard** is roughly flat: −2% to +1% per symbol.
+- **Moderate** loses 9–20%.
+- **Aggressive on M5** cannot trade EURUSD or GBPUSD at all, because the cost filter blocks every signal: a 2.3-pip spread is about half of a 5-pip M5 stop.
+- **Aggressive gold** loses, and **Aggressive BTC** is the only clearly positive result.
+
+This is a small sample, which is exactly why the bot is paper-trading.
 
 ## 8. First backtest result (honest)
 Run on 17 Oct 2026 on BTC:
