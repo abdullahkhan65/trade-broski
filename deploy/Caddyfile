@@ -1,0 +1,17 @@
+# Replace YOUR_DOMAIN with either:
+#   - a free sslip.io name built from your server IP, e.g. 203-0-113-7.sslip.io  (no signup)
+#   - or your own domain pointed at the server (A record)
+# Caddy gets and renews the HTTPS certificate automatically.
+YOUR_DOMAIN {
+    encode gzip
+    reverse_proxy 127.0.0.1:8000 {
+        # live price stream (server-sent events) must not be buffered
+        flush_interval -1
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
+}

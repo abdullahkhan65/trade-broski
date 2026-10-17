@@ -1,0 +1,26 @@
+[Unit]
+Description=AI Paper Trader (gold, forex, BTC)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trader
+Group=trader
+WorkingDirectory=/opt/trade-broski
+EnvironmentFile=/opt/trade-broski/.env
+ExecStart=/opt/trade-broski/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --log-level info --no-access-log
+Restart=always
+RestartSec=5
+# keep a small VPS healthy
+MemoryMax=600M
+Nice=5
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/trade-broski/data /opt/trade-broski/backups
+
+[Install]
+WantedBy=multi-user.target

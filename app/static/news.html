@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>News &amp; Events</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/common.js"></script>
+</head>
+<body>
+<main>
+  <section class="panel">
+    <h2>AI news read <span class="muted" id="digest-at" style="text-transform:none"></span></h2>
+    <div id="summary" class="muted"></div>
+    <div class="table-wrap" style="margin-top:10px"><table id="bias"></table></div>
+    <div class="controls" style="margin-top:10px">
+      <button onclick="refreshDigest()">Refresh now (1 AI call)</button>
+    </div>
+    <p class="muted" style="font-size:12px">Bias -1 = bearish for that instrument's price, +1 = bullish. Used in every AI trade decision,
+      by the optional news-momentum signal, and "extreme" risk blocks new trades (settings).</p>
+  </section>
+  <div class="grid cols-2" style="margin-top:12px">
+    <section class="panel">
+      <h2>Headlines (24h)</h2>
+      <div id="headlines"></div>
+    </section>
+    <section class="panel">
+      <h2>Economic calendar (high + medium impact)</h2>
+      <p class="muted" style="font-size:12px;margin-top:0">No new gold/forex trades during the blackout window around high-impact events for that currency.</p>
+      <div class="table-wrap"><table id="events"></table></div>
+    </section>
+  </div>
+</main>
+<script>
+nav("/news");
+async function load() {
+  const n = await api("/api/news");
+  const d = n.digest;
+  document.getElementById("digest-at").textContent = d ? `· ${ago(d.at)}` : "· none yet";
+  document.getElementById("summary").textContent = d ? d.market_summary : "No digest yet - it runs on a schedule once headlines arrive (or press refresh).";
+  document.getElementById("bias").innerHTML = d ? `<tr><th>Instrument</th><th>Bias</th><th>Risk</th><th>Driver</th></tr>` +
+    Object.entries(d.instruments).map(([s, v]) => `<tr><td>${s}</td><td class="${cls(v.bias)}">${v.bias.toFixed(2)}</td>
+      <td class="${v.risk === "extreme" || v.risk === "high" ? "down" : ""}">${v.risk}</td><td class="wrap">${esc(v.summary)}</td></tr>`).join("") : "";
+  document.getElementById("headlines").innerHTML = n.headlines.map((h) => `<div class="news-item">
+      <a href="${esc(h.link)}" target="_blank" rel="noopener">${esc(h.title)}</a>
+      <div class="meta">${ago(h.at)} · ${esc(h.source)} ${(h.symbols || "").split(",").filter(Boolean).map((s) => `<span class="tag">${s}</span>`).join("")}</div></div>`).join("")
+    || '<div class="muted">No headlines yet.</div>';
+  const now = Date.now();
+  document.getElementById("events").innerHTML = `<tr><th>When</th><th>Cur</th><th>Event</th><th>Fcst</th><th>Prev</th></tr>` +
+    n.events.map((e) => `<tr style="${new Date(e.at) < now ? "opacity:.5" : ""}"><td>${time(e.at)}</td><td>${e.currency}</td>
+      <td class="wrap impact-${e.impact}">${esc(e.title)}</td><td>${esc(e.forecast)}</td><td>${esc(e.previous)}</td></tr>`).join("");
+}
+async function refreshDigest() {
+  toast("Asking Haiku…");
+  try { const r = await api("/api/news/digest", { method: "POST" }); toast(r.result.slice(0, 120)); load(); }
+  catch (e) { toast("Error: " + e.message); }
+}
+load(); setInterval(load, 60000);
+</script>
+</body>
+</html>

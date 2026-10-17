@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Trader</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<script src="/static/common.js"></script>
+</head>
+<body>
+<main>
+  <div id="warnings"></div>
+
+  <section class="panel">
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section class="panel" style="margin-top:12px">
+    <h2>Live prices <span class="muted" id="session" style="text-transform:none"></span></h2>
+    <div class="quotes" id="quotes"></div>
+  </section>
+
+  <div class="grid cols-2" style="margin-top:12px">
+    <section class="panel">
+      <h2>Equity vs buy-and-hold</h2>
+      <canvas id="equity" height="110"></canvas>
+    </section>
+    <section class="panel">
+      <h2>Controls</h2>
+      <div class="controls">
+        <button onclick="control('pause')">⏸ Pause</button>
+        <button onclick="control('resume')">▶️ Resume</button>
+        <button onclick="control('close_all', 'Close ALL open positions at market?')">Close all</button>
+        <button class="danger" onclick="control('kill', 'KILL SWITCH: close everything and halt the bot?')">🛑 Kill switch</button>
+      </div>
+      <p class="muted" style="font-size:12px">Edit caps, leverage and how aggressive the bot is on the <a href="/settings">Settings</a> page.</p>
+      <h2 style="margin-top:16px">AI budget</h2>
+      <div id="budget"></div>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top:12px">
+    <h2>Open positions</h2>
+    <div class="table-wrap"><table id="positions"></table></div>
+  </section>
+
+  <section class="panel" style="margin-top:12px">
+    <h2>Trade log</h2>
+    <div class="table-wrap"><table id="trades"></table></div>
+  </section>
+
+  <div class="grid cols-2" style="margin-top:12px">
+    <section class="panel">
+      <h2>Signals & AI decisions</h2>
+      <div class="table-wrap" style="max-height:420px;overflow-y:auto"><table id="decisions"></table></div>
+    </section>
+    <section class="panel">
+      <h2>Scorecard</h2>
+      <div class="table-wrap"><table id="scorecard"></table></div>
+      <div id="disabled"></div>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top:12px">
+    <h2>Playbook <span class="muted" style="text-transform:none">(what the AI has learned; rewritten weekly)</span></h2>
+    <div class="grid cols-2">
+      <div>
+        <pre class="playbook" id="playbook"></pre>
+        <div class="controls" style="margin-top:8px">
+          <button class="small" onclick="editPlaybook()">Edit</button>
+        </div>
+      </div>
+      <div>
+        <h2>Recent lessons</h2>
+        <div id="lessons" style="max-height:220px;overflow-y:auto"></div>
+        <h2 style="margin-top:12px">Versions</h2>
+        <div id="pbversions"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+nav("/");
+let chart, state, lastPx = {};
+
+async function control(action, confirmMsg) {
+  if (confirmMsg && !confirm(confirmMsg)) return;
+  try { const r = await api(`/api/control/${action}`, { method: "POST", body: {} }); toast(`${action}: ${JSON.stringify(r)}`); loadState(); }
+  catch (e) { toast("Error: " + e.message); }
+}
+
+async function closePos(id) {
+  if (!confirm("Close this position at market?")) return;
+  await api("/api/control/close_position", { method: "POST", body: { id } });
+  loadState(); loadTrades();
+}
+
+function renderStats(a) {
+  const ml = a.margin_level_pct == null ? "–" : pct(a.margin_level_pct, 0);
+  document.getElementById("stats").innerHTML = [
+    ["Equity", usd(a.equity), ""],
+    ["P&L since start", `${usd(a.pnl_total, true)} <span style="font-size:13px">(${pct(100 * a.pnl_total / a.starting_balance)})</span>`, cls(a.pnl_total)],
+    ["Today", usd(a.pnl_today, true), cls(a.pnl_today)],
+    ["Margin used", pct(a.margin_used_pct, 0), a.margin_used_pct > 40 ? "warn" : ""],
+    ["Margin level", ml, ""],
+    ["Drawdown from peak", pct(a.drawdown_pct), a.drawdown_pct > 10 ? "down" : ""],
+    ["Status", `<span class="badge ${a.status}">${a.status}</span><div class="muted" style="font-size:12px">${esc(a.status_reason || "")}</div>`, ""],
+    ["Profile", `${esc(a.profile)}<div class="muted" style="font-size:12px">${a.trading_mode === "auto" ? "auto-trading" : "signals only"}</div>`, ""],
+  ].map(([l, v, c]) => `<div class="stat"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join("");
+}
+
+function renderQuotes(q) {
+  document.getElementById("quotes").innerHTML = Object.entries(q).map(([sym, x]) => {
+    const prev = lastPx[sym]; lastPx[sym] = x.mid;
+    const color = prev == null || x.mid == null ? "" : x.mid > prev ? "up" : x.mid < prev ? "down" : "";
+    const status = !x.open ? '<span class="badge">closed</span>' : x.age != null && x.age < 30 ? '<span class="badge active">live</span>' : '<span class="badge paused">stale</span>';
+    return `<div class="quote">
+      <div class="sym">${esc(x.display)} ${status}</div>
+      <div class="px ${color}">${fmtPx(x.mid, x.decimals)}</div>
+      <div class="meta">bid ${fmtPx(x.bid, x.decimals)} · ask ${fmtPx(x.ask, x.decimals)}${x.mark ? " · mark " + fmtPx(x.mark, 1) : ""}</div>
+      <div class="meta">${x.enabled ? "trading on" : "trading off"} · last check: ${esc(x.last_check || "–")}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderPositions(rows) {
+  const t = document.getElementById("positions");
+  if (!rows.length) { t.innerHTML = '<tr><td class="muted">No open positions</td></tr>'; return; }
+  t.innerHTML = `<tr><th>Instrument</th><th>Side</th><th>Lev</th><th>Units</th><th>Entry</th><th>Live</th><th>Stop</th><th>Target</th>
+    <th>Unrealized</th><th>Swap/funding</th><th>Signal</th><th>AI reason</th><th></th></tr>` +
+    rows.map((p) => `<tr>
+      <td>${p.symbol}</td><td class="${p.side === "LONG" ? "up" : "down"}">${p.side}</td><td>${p.leverage}x</td><td>${(+p.units).toPrecision(4)}</td>
+      <td>${fmtPx(p.entry, p.decimals)}</td><td id="pos-px-${p.id}">${fmtPx(p.price, p.decimals)}</td>
+      <td>${fmtPx(p.stop, p.decimals)}</td><td>${fmtPx(p.target, p.decimals)}</td>
+      <td id="pos-u-${p.id}" class="${cls(p.unrealized)}">${usd(p.unrealized, true)}</td>
+      <td>${usd(p.swap + p.funding, true)}</td><td>${p.signal}</td><td class="wrap">${esc(p.ai_reason)}</td>
+      <td><button class="small" onclick="closePos(${p.id})">Close</button></td></tr>`).join("");
+}
+
+function renderBudget(b) {
+  const used = Math.min(100, 100 * b.month_spend / Math.max(b.monthly_budget, 0.0001));
+  document.getElementById("budget").innerHTML = `
+    <div>${usd(b.month_spend)} of ${usd(b.monthly_budget)} this month <span class="muted">(${b.model})</span></div>
+    <div class="bar"><div style="width:${used}%;background:${used > 80 ? "var(--warn)" : "var(--accent)"}"></div></div>
+    <div class="muted" style="margin-top:6px">AI calls today: ${b.calls_today} / ${b.max_calls_per_day}</div>
+    ${b.blocked ? `<div class="warn" style="margin-top:6px">AI blocked: ${esc(b.blocked)}</div>` : ""}
+    <div class="muted" style="font-size:12px;margin-top:6px">${b.by_purpose.map((p) => `${p.purpose}: ${p.calls} calls, $${(p.cost || 0).toFixed(4)}`).join(" · ")}</div>`;
+}
+
+async function loadState() {
+  state = await api("/api/state");
+  document.getElementById("warnings").innerHTML = state.config_warnings.map((w) => `<div class="alert">⚠️ ${esc(w)}</div>`).join("");
+  document.getElementById("session").textContent = `· session: ${state.session}` + (state.funding_rate != null ? ` · BTC funding ${(state.funding_rate * 100).toFixed(4)}%/8h` : "");
+  renderStats(state.account); renderQuotes(state.quotes); renderPositions(state.positions); renderBudget(state.budget);
+}
+
+async function loadEquity() {
+  const rows = await api("/api/equity?days=120");
+  const labels = rows.map((r) => time(r.at));
+  const ds = [
+    { label: "Bot", data: rows.map((r) => r.equity), borderColor: "#4c8dff", borderWidth: 2 },
+    { label: "BTC buy & hold", data: rows.map((r) => r.btc_benchmark), borderColor: "#d29922", borderWidth: 1 },
+    { label: "Gold buy & hold", data: rows.map((r) => r.gold_benchmark), borderColor: "#c9a227", borderDash: [4, 3], borderWidth: 1 },
+  ].map((d) => ({ ...d, pointRadius: 0, tension: 0.2 }));
+  if (chart) { chart.data.labels = labels; chart.data.datasets = ds; chart.update(); return; }
+  chart = new Chart(document.getElementById("equity"), {
+    type: "line", data: { labels, datasets: ds },
+    options: { animation: false, interaction: { mode: "index", intersect: false },
+      scales: { x: { ticks: { color: "#8b95a5", maxTicksLimit: 8 }, grid: { color: "#2a313c" } },
+                y: { ticks: { color: "#8b95a5" }, grid: { color: "#2a313c" } } },
+      plugins: { legend: { labels: { color: "#e6e9ee" } } } },
+  });
+}
+
+async function loadTrades() {
+  const rows = await api("/api/trades?limit=100");
+  const t = document.getElementById("trades");
+  if (!rows.length) { t.innerHTML = '<tr><td class="muted">No closed trades yet</td></tr>'; return; }
+  t.innerHTML = `<tr><th>Closed</th><th>Instrument</th><th>Side</th><th>Entry → Exit</th><th>P&L</th><th>R</th><th>Fees</th><th>Swap+funding</th><th>Exit</th><th>Signal</th><th>Haiku's reason</th></tr>` +
+    rows.map((r) => `<tr><td>${time(r.closed_at)}</td><td>${r.symbol}</td><td>${r.side}</td><td>${r.entry} → ${(+r.exit).toPrecision(6)}</td>
+      <td class="${cls(r.pnl_usd)}">${usd(r.pnl_usd, true)}</td><td class="${cls(r.pnl_r)}">${r.pnl_r == null ? "–" : r.pnl_r.toFixed(2)}</td>
+      <td>${usd(r.fees)}</td><td>${usd(r.swap + r.funding, true)}</td><td>${esc(r.exit_reason)}</td><td>${r.signal}</td><td class="wrap">${esc(r.ai_reason)}</td></tr>`).join("");
+}
+
+async function loadDecisions() {
+  const rows = await api("/api/decisions?limit=100");
+  const t = document.getElementById("decisions");
+  if (!rows.length) { t.innerHTML = '<tr><td class="muted">No signals yet - the engine checks every closed 15m candle.</td></tr>'; return; }
+  t.innerHTML = `<tr><th>Time</th><th>Inst</th><th>Signal</th><th>AI</th><th>Result</th></tr>` +
+    rows.map((r) => `<tr><td>${time(r.at)}</td><td>${r.symbol} ${r.side}</td><td>${r.signal}</td><td>${r.ai_used ? "🤖" : "–"}</td>
+      <td class="wrap ${r.accepted ? "up" : "muted"}">${r.accepted ? "TAKEN" : esc(r.reject_reason)}</td></tr>`).join("");
+}
+
+async function loadScorecard() {
+  const s = await api("/api/scorecard");
+  const t = document.getElementById("scorecard");
+  t.innerHTML = s.rows.length ? `<tr><th>Inst</th><th>Signal</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>P&L</th></tr>` +
+    s.rows.map((r) => `<tr><td>${r.symbol}</td><td>${r.signal}${r.disabled ? ' <span class="tag">off</span>' : ""}</td><td>${r.n}</td>
+      <td>${(100 * r.win_rate).toFixed(0)}%</td><td class="${cls(r.avg_r)}">${(r.avg_r || 0).toFixed(2)}</td><td class="${cls(r.pnl)}">${usd(r.pnl, true)}</td></tr>`).join("")
+    : '<tr><td class="muted">No trades yet</td></tr>';
+  document.getElementById("disabled").innerHTML = s.disabled.map((d) =>
+    `<div class="muted" style="margin-top:8px">Auto-disabled: ${d.symbol} ${d.signal} (${esc(d.reason)})
+     <button class="small" onclick="enableSignal('${d.symbol}','${d.signal}')">Re-enable</button></div>`).join("");
+}
+
+async function enableSignal(symbol, signal) {
+  await api("/api/scorecard/enable", { method: "POST", body: { symbol, signal } }); loadScorecard();
+}
+
+async function loadPlaybook() {
+  const p = await api("/api/playbook");
+  document.getElementById("playbook").textContent = p.current;
+  document.getElementById("lessons").innerHTML = p.lessons.map((l) => `<div class="news-item"><div>${esc(l.lesson)}</div><div class="meta">${l.day}</div></div>`).join("") || '<div class="muted">No lessons yet - the daily review writes them.</div>';
+  document.getElementById("pbversions").innerHTML = p.versions.map((v, i) =>
+    `<div class="muted">${time(v.at)} · ${v.source} ${i ? `<button class="small" onclick="rollbackPb(${v.id})">Roll back to this</button>` : "(current)"}</div>`).join("");
+}
+
+async function editPlaybook() {
+  const cur = document.getElementById("playbook").textContent;
+  const text = prompt("Edit playbook (rules the AI reads before every trade):", cur);
+  if (text && text !== cur) { await api("/api/playbook", { method: "PUT", body: { content: text } }); loadPlaybook(); toast("Playbook saved"); }
+}
+async function rollbackPb(id) { if (confirm("Roll back playbook?")) { await api(`/api/playbook/rollback/${id}`, { method: "POST" }); loadPlaybook(); } }
+
+function liveStream() {
+  const es = new EventSource("/api/stream");
+  es.onmessage = (e) => {
+    const d = JSON.parse(e.data);
+    renderQuotes(d.quotes); renderStats(d.account);
+    d.positions.forEach((p) => {
+      const px = document.getElementById(`pos-px-${p.id}`), u = document.getElementById(`pos-u-${p.id}`);
+      if (px && state) { const pos = state.positions.find((x) => x.id === p.id); px.textContent = fmtPx(p.price, pos ? pos.decimals : 5); }
+      if (u) { u.textContent = usd(p.unrealized, true); u.className = cls(p.unrealized); }
+    });
+    if (state && d.positions.length !== state.positions.length) { loadState(); loadTrades(); }
+  };
+  es.onerror = () => { es.close(); setTimeout(liveStream, 5000); };
+}
+
+loadState(); loadEquity(); loadTrades(); loadDecisions(); loadScorecard(); loadPlaybook(); liveStream();
+setInterval(() => { loadState(); loadDecisions(); }, 30000);
+setInterval(() => { loadEquity(); loadTrades(); loadScorecard(); }, 120000);
+</script>
+</body>
+</html>
