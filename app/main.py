@@ -6,9 +6,11 @@ scheduled jobs, the MT5-style dashboard / settings / news pages and the JSON API
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import secrets
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,11 +22,11 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import scorecard
+from . import adaptive, scorecard
 from .ai.client import AIClient
 from .ai.review import current_playbook, daily_review, weekly_playbook
 from .alerts import telegram
-from .config import ENV
+from .config import ENV, ROOT
 from .db import DB, iso, parse_iso
 from .engine import Engine
 from .feeds import build_feeds
@@ -34,6 +36,7 @@ from .news.digest import latest_digest, run_digest
 from .news.sources import events_between, recent_headlines, refresh_calendar, refresh_headlines
 from .sessions import market_open, session_name
 from .settings_store import MODE_LABELS, MODES, SettingsStore
+from .signals import detect_regime
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 for noisy in ("httpx", "httpx2", "apscheduler.executors.default", "apscheduler.scheduler"):
@@ -109,9 +112,7 @@ async def job_daily() -> None:
         row = db.one("SELECT COUNT(*) n, COALESCE(SUM(pnl_usd),0) pnl FROM trades "
                      "WHERE account=? AND closed_at >= ? AND closed_at < ?", (m, d0, d1))
         msg.append(f"{MODE_LABELS[m]}: {row['n']} trades, P&L ${row['pnl']:+.2f}")
-        switched = scorecard.auto_disable(db, m, cfg)
-        if switched:
-            msg.append(f"  auto-disabled: {', '.join(switched)}")
+        await engine.learn(m)          # re-score strategies per regime (probation, switch-offs)
     await telegram.send("\n".join(msg))
     if store.current["ai"]["daily_review"]:
         for m in store.active_modes():
@@ -146,6 +147,51 @@ def schedule_jobs() -> None:
     scheduler.add_job(job_backup, CronTrigger(hour=0, minute=30))
     for job in scheduler.get_jobs():
         job.modify(misfire_grace_time=300, coalesce=True)
+    # weekly self-tuning on Saturday morning UTC (forex closed, server quiet)
+    scheduler.add_job(job_tune, CronTrigger(day_of_week="sat", hour=6, minute=0), misfire_grace_time=3600,
+                      coalesce=True)
+
+
+_tuning: set[str] = set()
+
+
+async def run_tuner(mode: str) -> dict:
+    """Run app.tuner in a separate low-priority process, then apply its recommendation if allowed."""
+    if mode in _tuning:
+        return {"mode": mode, "apply": False, "reason": "already running"}
+    _tuning.add(mode)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "nice", "-n", "10", sys.executable, "-m", "app.tuner", "--mode", mode, cwd=str(ROOT),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=1800)
+        res = json.loads(out.decode().strip().splitlines()[-1])
+    except Exception as e:  # noqa: BLE001
+        res = {"mode": mode, "apply": False, "reason": f"tuner failed: {type(e).__name__}: {e}"}
+    finally:
+        _tuning.discard(mode)
+    applied = False
+    if res.get("apply") and res.get("best") and store.current["modes"][mode]["adaptive"]["auto_tune"]:
+        data = copy.deepcopy(store.current)
+        data["modes"][mode]["exits"].update(res["best"])
+        store.save(data, f"tuner:{mode}")
+        applied = True
+    elif res.get("apply"):
+        res["reason"] += " (not applied: auto-tune is off for this mode)"
+    db.execute("INSERT INTO tuning_runs(at, account, applied, current, best, result, reason) VALUES (?,?,?,?,?,?,?)",
+               (iso(), mode, int(applied), json.dumps(res.get("current")), json.dumps(res.get("best")),
+                json.dumps({k: res.get(k) for k in ("train_best", "train_current", "test_best", "test_current",
+                                                    "combos_tried", "days", "timeframe")}), res.get("reason")))
+    icon = "🔧" if applied else "🔍"
+    await telegram.send(f"{icon} <b>[{MODE_LABELS[mode]}] weekly tuning</b>\n"
+                        f"{'Applied' if applied else 'No change'}: {res.get('reason')}")
+    log.info("[%s] tuner: applied=%s %s", mode, applied, res.get("reason"))
+    return res
+
+
+async def job_tune() -> None:
+    for m in store.active_modes():
+        await run_tuner(m)
 
 
 # ========================================================= telegram commands
@@ -249,6 +295,7 @@ def _quotes(account: str) -> dict:
             "enabled": store.current["instruments"].get(sym, False),
             "last_check": engine.last_check.get((account, sym)),
             "min_lot_risk": engine.min_lot_risk(account, sym, st.equity),
+            "regime": engine.regimes.get((sym, cfg["timeframe"])),
             "contract": inst.contract_size,
         }
     return out
@@ -414,6 +461,42 @@ def api_playbook_rollback(vid: int, _: str = Depends(auth)) -> dict:
     db.execute("INSERT INTO playbook_versions(mode, at, content, source) VALUES (?,?,?,?)",
                (row["mode"], iso(), row["content"], "rollback"))
     return {"ok": True}
+
+
+@app.get("/api/learning")
+def api_learning(account: str = "standard", _: str = Depends(auth)) -> dict:
+    account = _acc(account)
+    cfg = store.cfg(account)
+    tf = cfg["timeframe"]
+    regimes = {}
+    for sym, inst in INSTRUMENTS.items():
+        reg = detect_regime(load_candles(db, sym, 2000 if tf == "15m" else 6000, tf), cfg)
+        regimes[sym] = {"xm": inst.xm, "regime": reg.name if reg else None, "detail": str(reg) if reg else "not enough data"}
+    runs = db.all("SELECT * FROM tuning_runs WHERE account=? ORDER BY id DESC LIMIT 20", (account,))
+    for r in runs:
+        for k in ("current", "best", "result"):
+            r[k] = json.loads(r[k]) if r[k] else None
+    by_regime = db.all("SELECT signal, regime, COUNT(*) n, AVG(pnl_r) avg_r, SUM(pnl_usd) pnl FROM trades "
+                       "WHERE account=? GROUP BY signal, regime ORDER BY signal, regime", (account,))
+    return {"timeframe": tf, "regimes": regimes, "states": adaptive.states(db, account), "by_regime": by_regime,
+            "tuning": runs, "tuning_running": account in _tuning,
+            "exits": {k: cfg["exits"][k] for k in ("default_stop_atr", "default_target_atr", "breakeven_at_r")},
+            "adaptive": cfg["adaptive"]}
+
+
+@app.post("/api/learning/reset")
+def api_learning_reset(body: dict, _: str = Depends(auth)) -> dict:
+    adaptive.reset(db, _acc(body.get("account")), body["signal"], body["regime"])
+    return {"ok": True}
+
+
+@app.post("/api/tune/{mode}")
+async def api_tune(mode: str, _: str = Depends(auth)) -> dict:
+    mode = _acc(mode)
+    if mode in _tuning:
+        return {"started": False, "reason": "already running"}
+    asyncio.create_task(run_tuner(mode))
+    return {"started": True}
 
 
 @app.get("/api/news")

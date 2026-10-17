@@ -79,3 +79,43 @@ def percentile(values: list[float], pct: float) -> float:
         return 0.0
     idx = min(len(vals) - 1, max(0, int(round(pct / 100 * (len(vals) - 1)))))
     return vals[idx]
+
+
+def adx(h: list[float], l: list[float], c: list[float], period: int = 14) -> Series:
+    """Wilder's ADX: trend strength 0-100 (above ~25 = trending, below ~20 = ranging)."""
+    n = len(c)
+    out: Series = [None] * n
+    if n < 2 * period + 1:
+        return out
+    tr = true_range(h, l, c)
+    plus_dm = [0.0] + [max(h[i] - h[i - 1], 0) if (h[i] - h[i - 1]) > (l[i - 1] - l[i]) else 0.0 for i in range(1, n)]
+    minus_dm = [0.0] + [max(l[i - 1] - l[i], 0) if (l[i - 1] - l[i]) > (h[i] - h[i - 1]) else 0.0 for i in range(1, n)]
+    tr_s, p_s, m_s = sum(tr[1:period + 1]), sum(plus_dm[1:period + 1]), sum(minus_dm[1:period + 1])
+    dx: list[float] = []
+    for i in range(period + 1, n):
+        tr_s = tr_s - tr_s / period + tr[i]
+        p_s = p_s - p_s / period + plus_dm[i]
+        m_s = m_s - m_s / period + minus_dm[i]
+        pdi = 100 * p_s / tr_s if tr_s else 0.0
+        mdi = 100 * m_s / tr_s if tr_s else 0.0
+        dx.append(100 * abs(pdi - mdi) / (pdi + mdi) if (pdi + mdi) else 0.0)
+        if len(dx) == period:
+            adx_val = sum(dx) / period
+            out[i] = adx_val
+        elif len(dx) > period:
+            adx_val = (out[i - 1] * (period - 1) + dx[-1]) / period  # type: ignore[operator]
+            out[i] = adx_val
+    return out
+
+
+def bollinger(values: list[float], period: int = 20, mult: float = 2.0) -> tuple[Series, Series, Series]:
+    """(middle, upper, lower) bands."""
+    mid: Series = [None] * len(values)
+    up: Series = [None] * len(values)
+    lo: Series = [None] * len(values)
+    for i in range(period - 1, len(values)):
+        w = values[i - period + 1:i + 1]
+        m = sum(w) / period
+        sd = (sum((x - m) ** 2 for x in w) / period) ** 0.5
+        mid[i], up[i], lo[i] = m, m + mult * sd, m - mult * sd
+    return mid, up, lo

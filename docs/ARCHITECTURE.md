@@ -48,7 +48,9 @@ One Python process (FastAPI + asyncio + APScheduler) and one SQLite file. There 
 | `app/feeds/__init__.py` | Feed registry: builds the Binance, Kraken and Yahoo feeds; `fetch_candles` dispatches by instrument source |
 | `app/feeds/binance.py`, `kraken.py`, `yahoo.py` | Live quotes (`run_stream`) and 15m candles (`fetch_candles`) per source |
 | `app/feeds/dukascopy.py` | Free 2-year gold/forex history for backtests (minute candles aggregated to 15m) |
-| `app/backtest.py` | History download and cache, offline simulation with the same signal and risk code |
+| `app/backtest.py` | History download and cache; `collect_signals` (run once) + `simulate` (cheap replay) with the same signal and risk code |
+| `app/adaptive.py` | Per-account strategy × regime scores: active / cautious / off / probation, risk multiplier |
+| `app/tuner.py` | Weekly walk-forward tuning of stop/target/breakeven; runs as a separate low-priority process |
 | `app/check.py` | Pre-flight connectivity check |
 
 ## Database (SQLite, WAL mode, schema version 2)
@@ -67,6 +69,8 @@ On first start after an upgrade from the single-account version, the old file is
 | `settings_versions` | full settings JSON per save |
 | `disabled_signals` | auto-disabled signals per account and symbol |
 | `news_items`, `calendar_events`, `news_digests` | the news pipeline |
+| `strategy_state` | per account, strategy and regime: status, risk multiplier, trades, avg R, why, until |
+| `tuning_runs` | every weekly tuning result: settings before, best found, train/test R, applied or not, why |
 | `kv` | engine state: day/week start equity per account, benchmark start prices |
 
 ## API (all routes need HTTP Basic auth except `/healthz`)
@@ -82,6 +86,8 @@ On first start after an upgrade from the single-account version, the old file is
 | `POST /api/settings/reset/{mode}`, `/api/settings/revert/{id}` | reset one mode / roll back |
 | `PUT /api/playbook`, `POST /api/playbook/rollback/{id}` | edit or roll back a mode's playbook |
 | `POST /api/control/{pause,resume,close_all,kill,close_position,reset_account}?account=` | account controls |
+| `GET /api/learning?account=` | regimes now, strategy states, results by regime, tuning runs |
+| `POST /api/learning/reset`, `POST /api/tune/{mode}` | reset a strategy's state / run the tuner now |
 | `POST /api/news/digest` | force a news digest now |
 
 ## Design rules worth keeping

@@ -15,7 +15,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from . import risk, scorecard
+from . import adaptive, risk, scorecard
 from .ai import gate
 from .ai.client import AIClient
 from .ai.review import current_playbook
@@ -30,7 +30,7 @@ from .news.digest import bias_for
 from .news.sources import blackout, events_between, recent_headlines
 from .sessions import is_forex_like, market_open, minutes_to_weekly_close, session_name
 from .settings_store import MODE_LABELS, MODES, SettingsStore
-from .signals import Signal, evaluate
+from .signals import Signal, detect_regime, evaluate
 
 log = logging.getLogger("engine")
 
@@ -56,6 +56,7 @@ class Engine:
         self.last_snapshot: datetime | None = None
         self.last_check: dict[tuple[str, str], str] = {}           # (account, symbol) -> last filter result
         self.last_atr: dict[tuple[str, str], tuple[int, float]] = {}  # (symbol, tf) -> (candle t, ATR)
+        self.regimes: dict[tuple[str, str], str] = {}              # (symbol, tf) -> "trend (ADX 31, ...)"
         self._signal_lock = asyncio.Lock()
 
     def cfg(self, account: str) -> dict:
@@ -85,6 +86,12 @@ class Engine:
                     c = last[-1]["c"]
                     closed_at = datetime.fromtimestamp(last[-1]["t"] + tf_seconds("15m"), tz=timezone.utc)
                     self.prices.quotes[sym] = Quote(c, c, closed_at)
+        for tf in ("15m", "5m"):
+            cfg = self.cfg("aggressive" if tf == "5m" else "standard")
+            for sym in INSTRUMENTS:
+                reg = detect_regime(load_candles(self.db, sym, 6000 if tf == "5m" else 2000, tf), cfg)
+                if reg:
+                    self.regimes[(sym, tf)] = str(reg)
         # don't fire signals on the history we just loaded
         for m in MODES:
             tf = self.cfg(m)["timeframe"]
@@ -115,12 +122,15 @@ class Engine:
             await asyncio.sleep(self.store.current["engine"]["stop_check_seconds"])
 
     async def fast_tick(self) -> None:
-        for t in self.broker.check_exits(self.cfg):
+        closed = self.broker.check_exits(self.cfg)
+        for m in MODES:
+            closed += self.broker.check_stop_out(self.cfg(m), m)
+        for t in closed:
             await self._alert_close(t)
+        for m in {t["account"] for t in closed}:
+            await self.learn(m)
         for m in MODES:
             cfg = self.cfg(m)
-            for t in self.broker.check_stop_out(cfg, m):
-                await self._alert_close(t)
             st = self.broker.state(cfg, m)
             self.broker.save_equity(st)
             await self._check_limits(m, st)
@@ -260,18 +270,47 @@ class Engine:
                         continue
                     self.last_eval[(m, sym, tf)] = candles[-1]["t"]
                     news_bias = bias_for(self.db, sym) if cfg["news"]["enabled"] else None
-                    sigs, why_not = evaluate(inst, candles, cfg, now, news_bias,
-                                             scorecard.disabled_for(self.db, m, sym))
+                    sigs, why_not = evaluate(inst, candles, cfg, now, news_bias)
+                    reg = detect_regime(candles, cfg)
+                    if reg:
+                        self.regimes[(sym, tf)] = str(reg)
                     self.last_check[(m, sym)] = why_not or ("signal" if sigs else "no setup")
-                    for sig in sigs:
-                        await self.handle_signal(m, inst, sig, candles, now)
+                    await self._choose_and_handle(m, inst, sigs, candles, now)
+
+    async def _choose_and_handle(self, account: str, inst: Instrument, sigs: list[Signal],
+                                 candles: list[dict], now: datetime) -> None:
+        """Adaptive layer: drop strategies that are switched off for this regime, then take the
+        one with the best track record here. Probation / weak ones trade at reduced risk."""
+        cfg = self.cfg(account)
+        allowed = []
+        for sig in sigs:
+            status, mult, why = adaptive.lookup(self.db, account, cfg, sig.type, sig.regime)
+            if status == "off":
+                self._record(account, sig, False, f"adaptive: {sig.type} is off in {sig.regime} markets ({why})")
+                continue
+            allowed.append((adaptive.score(self.db, account, sig.type, sig.regime), mult, status, sig))
+        if not allowed:
+            return
+        allowed.sort(key=lambda x: x[0], reverse=True)
+        _, mult, status, sig = allowed[0]
+        sig.context["adaptive"] = f"{status}" + (f", risk x{mult:g}" if mult < 1 else "")
+        await self.handle_signal(account, inst, sig, candles, now, risk_mult=mult)
+
+    async def learn(self, account: str) -> list[str]:
+        changes = adaptive.update(self.db, account, self.cfg(account))
+        for c in changes:
+            log.info("[%s] adaptive: %s", account, c)
+        if changes:
+            await self.tg.send(f"🧠 <b>[{MODE_LABELS[account]}] strategy update</b>\n" + "\n".join(f"• {c}" for c in changes))
+        return changes
 
     def _record(self, account: str, sig: Signal, accepted: bool, reason: str | None, ai_used: bool = False,
                 ai_reply: str | None = None) -> int:
         cur = self.db.execute(
-            "INSERT INTO decisions(at, account, symbol, signal, side, signal_note, ai_used, ai_reply, accepted, "
-            "reject_reason) VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (iso(), account, sig.symbol, sig.type, sig.side, sig.note, int(ai_used), ai_reply, int(accepted), reason))
+            "INSERT INTO decisions(at, account, symbol, signal, side, regime, signal_note, ai_used, ai_reply, accepted, "
+            "reject_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (iso(), account, sig.symbol, sig.type, sig.side, sig.regime, sig.note, int(ai_used), ai_reply,
+             int(accepted), reason))
         return int(cur.lastrowid)
 
     def _pre_checks(self, account: str, inst: Instrument, sig: Signal, now: datetime,
@@ -303,7 +342,7 @@ class Engine:
         return None
 
     async def handle_signal(self, account: str, inst: Instrument, sig: Signal, candles: list[dict],
-                            now: datetime) -> None:
+                            now: datetime, risk_mult: float = 1.0) -> None:
         cfg = self.cfg(account)
         positions = self.broker.positions(account)
         why = self._pre_checks(account, inst, sig, now, positions)
@@ -315,7 +354,7 @@ class Engine:
         q = self.prices.get(sig.symbol)
         entry = self.broker.entry_price(cfg, inst, sig.side, q)
         # cheap dry-run with default stops so we don't pay for AI on an impossible trade
-        dry = risk.size_order(inst, cfg, sig.side, entry, sig.atr, st.equity, st.margin_used)
+        dry = risk.size_order(inst, cfg, sig.side, entry, sig.atr, st.equity, st.margin_used, risk_mult=risk_mult)
         if isinstance(dry, risk.Rejection):
             self._record(account, sig, False, dry.reason)
             return
@@ -361,7 +400,7 @@ class Engine:
         entry = self.broker.entry_price(cfg, inst, sig.side, q)
         st = self.broker.state(cfg, account)
         order = risk.size_order(inst, cfg, sig.side, entry, sig.atr, st.equity, st.margin_used,
-                                stop_atr, target_atr)
+                                stop_atr, target_atr, risk_mult)
         if isinstance(order, risk.Rejection):
             self._record(account, sig, False, order.reason, ai_used, ai_reply)
             return
@@ -372,7 +411,7 @@ class Engine:
             return
 
         decision_id = self._record(account, sig, True, order.note or None, ai_used, ai_reply)
-        self.broker.open(cfg, account, order, sig.type, reason, decision_id)
+        self.broker.open(cfg, account, order, sig.type, reason, decision_id, sig.regime)
         await self.tg.send(self._open_text(account, inst, order, sig, reason))
 
     def _news_context(self, cfg: dict, inst: Instrument, now: datetime) -> dict:

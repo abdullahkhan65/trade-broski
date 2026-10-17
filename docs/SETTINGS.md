@@ -53,6 +53,8 @@ So **Standard and Moderate will mostly skip gold and BTC**. The Journal tab show
 - **Move stop to breakeven at +R**: at +X R the stop moves to the entry price (0 = off).
 - **Signals**: switch trend pullback, session breakout and news momentum on or off, plus the London/NY session filter.
 - **AI**: minimum confidence for Haiku's TAKE, and what to do when AI is off or over budget.
+- **Range reversion / Momentum breakout**: the two regime-specific strategies (see STRATEGY.md §7).
+- **Self-learning**: *Strategy switching by regime* on/off; *Trades needed before judging a strategy* (fewer means it adapts faster but reacts to luck); *Weekly self-tuning* on/off. Tuning only ever changes the default stop, target and breakeven, within this mode's own limits.
 - **Weekend**: close, halve or hold gold/forex before Friday's close, and stop opening new trades N minutes before it.
 
 ## Global settings (all accounts)

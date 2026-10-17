@@ -107,12 +107,13 @@ class PaperBroker:
         self.db.execute("UPDATE accounts SET cash = cash + ? WHERE id=?", (delta, account))
 
     def open(self, cfg: dict, account: str, order: Order, signal: str, ai_reason: str | None,
-             decision_id: int | None) -> int:
+             decision_id: int | None, regime: str | None = None) -> int:
         cur = self.db.execute(
             "INSERT INTO positions(account, symbol, side, lots, units, leverage, entry, stop, initial_stop, target, "
-            "margin, risk_usd, signal, ai_reason, decision_id, opened_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "margin, risk_usd, signal, regime, ai_reason, decision_id, opened_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account, order.symbol, order.side, order.lots, order.units, order.leverage, order.entry, order.stop,
-             order.stop, order.target, order.margin, order.risk_usd, signal, ai_reason, decision_id, iso()))
+             order.stop, order.target, order.margin, order.risk_usd, signal, regime, ai_reason, decision_id, iso()))
         return int(cur.lastrowid)
 
     def close(self, cfg: dict, p: dict, price: float, reason: str, fraction: float = 1.0) -> dict:
@@ -130,7 +131,7 @@ class PaperBroker:
             "lots": lots, "units": units, "leverage": p["leverage"],
             "entry": p["entry"], "exit": price, "stop": p["stop"], "target": p["target"],
             "pnl_usd": net, "pnl_r": net / risk if risk > 0 else None, "fees": fees, "swap": swap,
-            "funding": funding, "signal": p["signal"], "ai_reason": p["ai_reason"],
+            "funding": funding, "signal": p["signal"], "regime": p.get("regime"), "ai_reason": p["ai_reason"],
             "exit_reason": reason, "opened_at": p["opened_at"], "closed_at": iso(),
         }
         cols = ",".join(trade)

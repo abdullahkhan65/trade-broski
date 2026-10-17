@@ -12,6 +12,7 @@
 - [x] News: economic calendar blackout, RSS headlines tagged by instrument, hourly AI news digest, optional news-momentum signal
 - [x] Three paper accounts side by side (Standard M15, Moderate M15, Aggressive scalper M5), each with its own rules, playbook and learning loop
 - [x] XM Standard (MT5) modelling: lots and contract sizes, 0.01-lot minimum rules, spreads and swaps in points, 1:1000 margin, 20% stop-out, breakeven, daily profit target
+- [x] Self-learning: market-regime detection, 2 new strategies (range reversion, momentum breakout), per-account strategy switching with probation, weekly walk-forward tuning of stops/targets
 - [x] MT5-style terminal (Market Watch, chart with SL/TP lines, Trade/History/Journal tabs, account bar, Compare view), settings with modes side by side, news page, Telegram alerts
 - [x] Daily review, weekly playbook, scorecard with auto-disable
 - [x] Nightly backups (local and Telegram), systemd, Caddy, setup and update scripts
@@ -60,6 +61,8 @@ Even then, start with an amount you can afford to lose entirely, with the rules 
 |---|---|---|
 | Timeframe setting per instrument (15m / 1h) | BTC costs vs. edge, see above | M |
 | Telegram approval mode (tap ✅/❌ per trade) | Open question 2; a gentle start before full auto | S |
+| Playbook trial run | A new weekly playbook runs silently next to the current one for a week; it takes over only if it would have done better (≈2× gate AI cost) | M |
+| Monthly strategy review by a stronger Claude model | Reads all results, proposes concrete changes that must pass the tuner's walk-forward test before going live (~$0.10/month) | M |
 | Broker demo mirroring (spec "Option A") | Real fills, margin and swap from a broker that accepts Pakistan (e.g. an MT5 demo via a bridge) instead of simulated ones | L |
 | Better USD/JPY feed | Yahoo is polled and unofficial; replace it if you want USD/JPY on | S |
 | Limit-order (maker) simulation for BTC | Lower fees | M |

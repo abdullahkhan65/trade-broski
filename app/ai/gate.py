@@ -87,11 +87,15 @@ def build_prompt(inst: Instrument, sig: Signal, candles: list[dict], account: di
 {MODE_LABELS[mode]} - {MODE_BLURBS[mode]}
 timeframe: {cfg['timeframe']}; risk per trade {cfg['risk']['risk_per_trade_pct']}%;
 stop_atr allowed {e['min_stop_atr']}-{e['max_stop_atr']}; min reward:risk {e['min_reward_risk']}
+tested defaults (weekly walk-forward tuning): stop {e['default_stop_atr']} ATR, target {e['default_target_atr']} ATR,
+breakeven at {e['breakeven_at_r'] or 'off'}R - prefer these unless the chart clearly argues otherwise
 
 SIGNAL
 symbol: {inst.xm}
 side: {sig.side}
 type: {sig.type}
+market regime: {sig.regime}
+strategy track record in this regime: {sig.context.get('adaptive', 'no history')}
 why: {sig.note}
 price: {sig.price:.{d}f}  ATR(14,{cfg['timeframe']}): {sig.atr:.{d}f}  spread: {spread if spread is not None else 'n/a'}
 session now: {session}

@@ -101,11 +101,28 @@ def daily_atr_floors(candles: list[dict], cfg: dict, tf: str) -> dict[int, float
     return floors
 
 
-def run(inst: Instrument, candles: list[dict], cfg: dict, start_balance: float) -> dict:
+def collect_signals(inst: Instrument, candles: list[dict], cfg: dict) -> dict[int, object]:
+    """Run the signal engine once over the history: {candle index: first Signal}.
+    Signals don't depend on stops/targets, so the tuner can reuse this for every setting it tries."""
     cfg = json.loads(json.dumps(cfg))
     cfg["signals"]["news_momentum"] = False      # no historical news digest
     tf = cfg["timeframe"]
     floors = daily_atr_floors(candles, cfg, tf)
+    out: dict[int, object] = {}
+    for i in range(WINDOW, len(candles)):
+        c = candles[i]
+        now = datetime.fromtimestamp(c["t"] + tf_seconds(tf), tz=timezone.utc)
+        sigs, _ = evaluate(inst, candles[i - WINDOW + 1:i + 1], cfg, now,
+                           atr_floor=floors.get(c["t"] // 86400, 0.0))
+        if sigs:
+            out[i] = sigs[0]
+    return out
+
+
+def simulate(inst: Instrument, candles: list[dict], signals: dict[int, object], cfg: dict,
+             start_balance: float, start: int = WINDOW, end: int | None = None) -> dict:
+    """Replay trades from precomputed signals between candle indexes [start, end)."""
+    end = end or len(candles)
     half = cfg["broker"].get(f"spread_{inst.symbol}", 0) * inst.point / 2
     swap_pts = {s: cfg["broker"].get(f"swap_{inst.symbol}_{s.lower()}", 0.0) for s in ("LONG", "SHORT")}
     r = cfg["risk"]
@@ -118,7 +135,7 @@ def run(inst: Instrument, candles: list[dict], cfg: dict, start_balance: float) 
     pending = None
     day, day_start, day_blocked = None, equity, False
 
-    for i in range(WINDOW, len(candles)):
+    for i in range(max(start, 1), end):
         c = candles[i]
         d = c["t"] // 86400
         if d != day:
@@ -160,8 +177,9 @@ def run(inst: Instrument, candles: list[dict], cfg: dict, start_balance: float) 
                 equity += net
                 if reason == "stop" and abs(pos["stop"] - o.entry) < inst.point:
                     reason = "breakeven"
-                trades.append({"signal": pos["sig"].type, "side": o.side, "lots": o.lots, "entry": o.entry,
-                               "exit": exit_px, "pnl": net, "r": net / o.risk_usd, "reason": reason,
+                trades.append({"signal": pos["sig"].type, "regime": pos["sig"].regime, "side": o.side,
+                               "lots": o.lots, "entry": o.entry, "exit": exit_px, "pnl": net,
+                               "r": net / o.risk_usd, "reason": reason,
                                "opened": datetime.fromtimestamp(pos["t"], tz=timezone.utc).isoformat(),
                                "closed": datetime.fromtimestamp(c["t"], tz=timezone.utc).isoformat()})
                 pos = None
@@ -177,21 +195,23 @@ def run(inst: Instrument, candles: list[dict], cfg: dict, start_balance: float) 
             change = 100 * (equity - day_start) / day_start
             if change <= -r["daily_loss_limit_pct"] or (r["daily_profit_target_pct"] and change >= r["daily_profit_target_pct"]):
                 day_blocked = True
-        # 3) evaluate signals on this CLOSED candle; act on the next candle's open
-        if pos is None and pending is None and not day_blocked and equity > 0:
-            now = datetime.fromtimestamp(c["t"] + tf_seconds(tf), tz=timezone.utc)
-            sigs, _ = evaluate(inst, candles[i - WINDOW + 1:i + 1], cfg, now,
-                               atr_floor=floors.get(c["t"] // 86400, 0.0))
-            if sigs:
-                pending = sigs[0]
+        # 3) a signal on this CLOSED candle is acted on at the next candle's open
+        if pos is None and pending is None and not day_blocked and equity > 0 and i in signals:
+            pending = signals[i]
 
-    buy_hold = start_balance * candles[-1]["c"] / candles[WINDOW]["c"]
+    s0 = candles[max(start, 1)]
+    buy_hold = start_balance * candles[end - 1]["c"] / s0["c"]
     by_sig: dict[str, list] = {}
     for t in trades:
         by_sig.setdefault(t["signal"], []).append(t)
-    days = max(1.0, (candles[-1]["t"] - candles[WINDOW]["t"]) / 86400)
+    days = max(1.0, (candles[end - 1]["t"] - s0["t"]) / 86400)
     return {"equity": equity, "max_dd": max_dd, "trades": trades, "by_signal": by_sig,
-            "buy_hold": buy_hold, "skipped": skipped, "days": days}
+            "buy_hold": buy_hold, "skipped": skipped, "days": days,
+            "total_r": sum(t["r"] for t in trades)}
+
+
+def run(inst: Instrument, candles: list[dict], cfg: dict, start_balance: float) -> dict:
+    return simulate(inst, candles, collect_signals(inst, candles, cfg), cfg, start_balance)
 
 
 def report(mode: str, symbol: str, res: dict, start_balance: float) -> None:

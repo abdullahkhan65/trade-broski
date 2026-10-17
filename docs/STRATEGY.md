@@ -86,12 +86,46 @@ Gold on M15 (ATR ~$8 → stop $12): 0.01 lot already risks $12 = 4.8%. Standard 
 - **Friday close:** gold/forex positions are closed or halved before the weekend, per mode. A 0.01 lot can't be halved, so it's closed.
 - **Daily target / limits:** per account. Hitting the daily profit target or loss limit stops new trades until the next UTC day.
 
-## 7. Learning loop (per account)
-1. **Per trade:** account, lots, signal, Haiku's reason, entry and exit, P&L in $ and in R, and swap are stored.
-2. **Daily (00:05 UTC):** for each account, Haiku reads yesterday's trades and skipped signals **for that account** and writes 3–5 lessons.
-3. **Weekly (Sun 12:00 UTC):** each account's playbook is rewritten from its own lessons and scorecard, staying true to its style. Old versions are kept, and you can edit or roll back.
-4. **Scorecard (daily, per account):** a signal with a negative average R after 30+ trades on a symbol is **switched off for that account**.
-5. **Backtest before changing rules:** `python -m app.backtest --mode all --symbol all --days 365`.
+## 7. Self-learning (per account): four loops
+
+| Loop | When | What it changes | Costs AI? |
+|---|---|---|---|
+| **Playbook** | daily lessons, Sunday rewrite | How Haiku judges setups for this account | yes (cents) |
+| **Strategy switching by regime** | after every closed trade + daily | Which strategy may trade in which market regime, and at what risk | no |
+| **Weekly walk-forward tuning** | Saturday 06:00 UTC | Default stop / target / breakeven for the account | no |
+| **Trade log + scorecard** | every trade | The data all of the above learn from | no |
+
+### Market regimes
+Every candle is labelled from ADX (trend strength) and where ATR sits in its 20-day range:
+`volatile` (ATR in its top 10%), `trend` (ADX ≥ 25), `range` (ADX ≤ 20), otherwise `mixed`. Market Watch shows the label for each symbol.
+
+### Five strategies
+| Strategy | Fires in | Idea |
+|---|---|---|
+| `trend_pullback` | any | Pullback to the 20 EMA in a 50 EMA trend, RSI turns back |
+| `session_breakout` | any (gold/forex) | First close beyond the Asian-session range in London/NY |
+| `news_momentum` | any | Strong AI news bias confirmed by price |
+| `range_reversion` | range, mixed | Poke outside a Bollinger band with stretched RSI, close back inside → fade to the middle |
+| `momentum_breakout` | trend, volatile | Strong candle closes beyond the 20-candle high/low, with the trend |
+
+### Strategy switching (`app/adaptive.py`)
+Each trade is stored with its strategy and regime. For every (account, strategy, regime):
+- **score = total R ÷ (trades + 10)**. The "+10" makes a handful of lucky trades count for little.
+- after *min trades* (15; 12 for the scalper): score < 0 → **cautious** (half risk); score < −0.15 → **off** in that regime for 14 days.
+- when "off" expires → **probation** at half risk. After 8 trades: avg R > 0 → **active** again; otherwise off for 28 days.
+- When two strategies fire together, the one with the better score for the current regime is taken.
+- It **can only lower risk or switch things off**; it never raises risk above the account's setting. You can reset any strategy from the 🧠 Learning tab.
+
+### Weekly walk-forward tuning (`app/tuner.py`)
+For each account, on the last 60 days (M15) or 30 days (M5) of history:
+1. Run the signal engine once.
+2. On the **older 70%**, try ~30 nearby combinations of default stop (±0.3 ATR), target (×0.75 / ×1 / ×1.25) and breakeven (off / 1R / 1.5R), and pick the best by total R.
+3. On the **newest 30%**, which the search never saw, compare that winner with the current settings.
+4. Apply it **only if** it's profitable on that unseen data and beats the current settings there by ≥ 1R. Otherwise keep the current settings and log why.
+The result appears in the 🧠 Learning tab, and the change is saved as a settings version (`tuner:<mode>`) you can revert. Haiku's prompt includes these tested defaults. Run it any time with "Run tuner now", or `python -m app.tuner --mode aggressive`.
+
+### Playbook loop
+Daily, Haiku turns each account's trades and skipped signals into lessons. On Sunday it rewrites that account's playbook, which Haiku reads before every decision.
 
 ## 8. First backtest result (honest)
 Run on 17 Oct 2026 on BTC:

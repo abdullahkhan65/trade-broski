@@ -12,7 +12,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 2   # bump when tables change; older DB files are backed up and recreated
+SCHEMA_VERSION = 3   # v1 files are backed up and recreated; v2 -> v3 is upgraded in place
+
+# columns added after a schema version shipped: (table, column, type) - added in place if missing
+ADDED_COLUMNS = [
+    ("positions", "regime", "TEXT"),
+    ("trades", "regime", "TEXT"),
+    ("decisions", "regime", "TEXT"),
+]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS accounts (
@@ -52,6 +59,7 @@ CREATE TABLE IF NOT EXISTS positions (
     swap REAL NOT NULL DEFAULT 0,
     funding REAL NOT NULL DEFAULT 0,
     signal TEXT,
+    regime TEXT,
     ai_reason TEXT,
     decision_id INTEGER,
     weekend_halved INTEGER NOT NULL DEFAULT 0,
@@ -76,6 +84,7 @@ CREATE TABLE IF NOT EXISTS trades (
     swap REAL NOT NULL DEFAULT 0,
     funding REAL NOT NULL DEFAULT 0,
     signal TEXT,
+    regime TEXT,
     ai_reason TEXT,
     exit_reason TEXT,
     opened_at TEXT NOT NULL,
@@ -89,6 +98,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     symbol TEXT NOT NULL,
     signal TEXT NOT NULL,
     side TEXT NOT NULL,
+    regime TEXT,
     signal_note TEXT,
     ai_used INTEGER NOT NULL DEFAULT 0,
     ai_reply TEXT,
@@ -176,6 +186,32 @@ CREATE TABLE IF NOT EXISTS news_digests (
     data TEXT NOT NULL                          -- JSON: {instruments: {symbol: {bias, risk, summary}}, market_summary}
 );
 
+CREATE TABLE IF NOT EXISTS strategy_state (
+    account TEXT NOT NULL,
+    signal TEXT NOT NULL,
+    regime TEXT NOT NULL,                       -- trend | range | volatile | mixed
+    status TEXT NOT NULL,                       -- active | cautious | off | probation
+    risk_mult REAL NOT NULL DEFAULT 1,
+    since TEXT,                                 -- when the current status started
+    until TEXT,                                 -- 'off' until this time, then probation
+    n INTEGER NOT NULL DEFAULT 0,
+    avg_r REAL,
+    reason TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (account, signal, regime)
+);
+
+CREATE TABLE IF NOT EXISTS tuning_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    account TEXT NOT NULL,
+    applied INTEGER NOT NULL DEFAULT 0,
+    current TEXT,                               -- JSON params before
+    best TEXT,                                  -- JSON best params found
+    result TEXT,                                -- JSON train/test metrics
+    reason TEXT
+);
+
 CREATE TABLE IF NOT EXISTS kv (
     k TEXT PRIMARY KEY,
     v TEXT
@@ -216,6 +252,10 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        for table, col, typ in ADDED_COLUMNS:
+            cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
         self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.conn.commit()
 
@@ -228,7 +268,7 @@ class DB:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         has_tables = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
         conn.close()
-        if version >= SCHEMA_VERSION or not has_tables:
+        if version >= 2 or not has_tables:      # v2+ is upgraded in place, never wiped
             return
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         for suffix in ("", "-wal", "-shm"):
@@ -289,7 +329,8 @@ class DB:
 
     def reset_account(self, acc: str, starting_balance: float) -> None:
         """Wipe one paper account back to its starting balance (history of that account removed)."""
-        for table in ("positions", "trades", "decisions", "equity_snapshots", "disabled_signals"):
+        for table in ("positions", "trades", "decisions", "equity_snapshots", "disabled_signals",
+                      "strategy_state", "tuning_runs"):
             self.execute(f"DELETE FROM {table} WHERE account=?", (acc,))
         self.execute("DELETE FROM accounts WHERE id=?", (acc,))
         self.execute("DELETE FROM kv WHERE k LIKE ?", (f"%:{acc}",))

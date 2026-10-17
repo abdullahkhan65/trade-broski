@@ -56,6 +56,8 @@ tr.click:hover td { background: #1a2130; }
 .flash-up { color: var(--buy) !important; } .flash-down { color: var(--sell) !important; }
 .tag { font-size: 10px; padding: 0 4px; border-radius: 3px; border: 1px solid var(--border); color: var(--muted); }
 .tag.live { color: var(--up); border-color: #1d5a52; } .tag.closed { color: var(--muted); }
+.tag.regime-trend { color: #4fc3f7; border-color: #1f4f66; } .tag.regime-range { color: #b39ddb; border-color: #44396b; }
+.tag.regime-volatile { color: var(--warn); border-color: #6b5214; } .tag.regime-mixed { color: var(--muted); }
 .tag.risk-ok { color: var(--up); } .tag.risk-high { color: var(--warn); } .tag.risk-no { color: var(--down); }
 
 .chart-toolbar { display: flex; gap: 4px; align-items: center; padding: 4px 8px; background: var(--panel-2); border-bottom: 1px solid var(--border); }

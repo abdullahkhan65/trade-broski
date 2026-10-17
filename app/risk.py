@@ -68,7 +68,10 @@ def broker_leverage(cfg: dict, inst: Instrument) -> float:
 
 def size_order(inst: Instrument, cfg: dict, side: str, entry: float, atr: float,
                equity: float, margin_used: float, stop_atr: float | None = None,
-               target_atr: float | None = None) -> Order | Rejection:
+               target_atr: float | None = None, risk_mult: float = 1.0) -> Order | Rejection:
+    """risk_mult < 1 comes from the adaptive layer (probation / weak strategy): it scales
+    both the risk % and the 0.01-lot allowance down. It can never scale them up."""
+    risk_mult = min(max(risk_mult, 0.0), 1.0)
     r = cfg["risk"]
     if equity <= 0:
         return Rejection("no equity")
@@ -79,17 +82,19 @@ def size_order(inst: Instrument, cfg: dict, side: str, entry: float, atr: float,
         return Rejection("zero stop distance")
 
     loss_per_lot = usd_per_lot(inst, stop_dist, entry)
-    risk_budget = equity * r["risk_per_trade_pct"] / 100
+    risk_pct = r["risk_per_trade_pct"] * risk_mult
+    allow_pct = r["min_lot_max_risk_pct"] * risk_mult
+    risk_budget = equity * risk_pct / 100
     lots = floor_lots(inst, risk_budget / loss_per_lot)
     note = ""
     if lots < inst.min_lot:
         min_risk_pct = 100 * loss_per_lot * inst.min_lot / equity
-        if r["min_lot_rule"] == "allow" and min_risk_pct <= r["min_lot_max_risk_pct"]:
+        if r["min_lot_rule"] == "allow" and min_risk_pct <= allow_pct:
             lots = inst.min_lot
-            note = f"0.01 lot = {min_risk_pct:.1f}% risk (above {r['risk_per_trade_pct']}%, allowed up to {r['min_lot_max_risk_pct']}%)"
+            note = f"0.01 lot = {min_risk_pct:.1f}% risk (above {risk_pct:g}%, allowed up to {allow_pct:g}%)"
         else:
             return Rejection(f"0.01 lot would risk {min_risk_pct:.1f}% (${loss_per_lot * inst.min_lot:.2f}); "
-                             f"limit {r['risk_per_trade_pct'] if r['min_lot_rule'] == 'skip' else r['min_lot_max_risk_pct']}%")
+                             f"limit {risk_pct if r['min_lot_rule'] == 'skip' else allow_pct:g}%")
 
     cap = float(r[f"max_leverage_{inst.asset_class}"])
     units = lots * inst.contract_size
@@ -109,6 +114,8 @@ def size_order(inst: Instrument, cfg: dict, side: str, entry: float, atr: float,
     if margin_used + margin > max_margin:
         return Rejection(f"margin would be {100 * (margin_used + margin) / equity:.0f}% of equity, max {r['max_margin_used_pct']:.0f}%")
     risk_usd = loss_per_lot * lots
+    if risk_mult < 1:
+        note = (note + "; " if note else "") + f"risk x{risk_mult:g} (adaptive)"
     return Order(inst.symbol, side, lots, units, entry, stop, target, round(eff_lev, 2), margin, notional,
                  risk_usd, 100 * risk_usd / equity, note)
 

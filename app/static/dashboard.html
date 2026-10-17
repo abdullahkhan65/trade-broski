@@ -94,8 +94,9 @@ function renderMW(quotes) {
     const status = !q.open ? '<span class="tag closed">closed</span>' : q.age != null && q.age < 30 ? '<span class="tag live">live</span>' : '<span class="tag">stale</span>';
     const r = q.min_lot_risk;
     const riskTag = r == null ? "" : `<span class="tag ${r <= 2 ? "risk-ok" : r <= 5 ? "risk-high" : "risk-no"}" title="Risk of 0.01 lot with this account's default stop">0.01 = ${r.toFixed(1)}%</span>`;
+    const reg = q.regime ? `<span class="tag regime-${q.regime.split(" ")[0]}" title="${esc(q.regime)}">${q.regime.split(" ")[0]}</span>` : "";
     return `<tr class="click ${s === sym ? "sel" : ""}" onclick="selectSymbol('${s}')">
-      <td><div class="mw-sym">${q.xm} ${q.enabled ? "" : '<span class="tag">off</span>'}</div><div class="mw-sub">${status} ${riskTag}</div></td>
+      <td><div class="mw-sym">${q.xm} ${q.enabled ? "" : '<span class="tag">off</span>'}</div><div class="mw-sub">${status} ${reg} ${riskTag}</div></td>
       <td class="num ${fl}">${px(q.bid, q.digits)}</td><td class="num ${fl}">${px(q.ask, q.digits)}</td>
       <td class="num muted">${q.spread ?? "–"}</td></tr>`;
   }).join("");
@@ -173,7 +174,7 @@ function renderStatus(a) {
 
 // ----------------------------------------------------------------- toolbox
 const TABS = [["trade", "Trade"], ["history", "History"], ["journal", "Journal"], ["scorecard", "Scorecard"],
-              ["playbook", "Playbook"], ["ai", "AI & budget"], ["controls", "Account"]];
+              ["learning", "🧠 Learning"], ["playbook", "Playbook"], ["ai", "AI & budget"], ["controls", "Account"]];
 
 function renderTabsBar() {
   document.getElementById("tb-tabs").innerHTML = TABS.map(([k, t]) =>
@@ -189,6 +190,7 @@ async function renderTab() {
   if (tab === "journal") body.innerHTML = await journalTable();
   if (tab === "scorecard") body.innerHTML = await scorecardTable();
   if (tab === "playbook") body.innerHTML = await playbookView();
+  if (tab === "learning") body.innerHTML = await learningView();
   if (tab === "ai") body.innerHTML = aiView();
   if (tab === "controls") body.innerHTML = controlsView();
 }
@@ -240,6 +242,50 @@ async function scorecardTable() {
   const dis = s.disabled.map((d) => `<div class="muted" style="padding:4px 8px">Auto-disabled: ${d.symbol} ${d.signal} (${esc(d.reason)})
     <button class="small" onclick="enableSignal('${d.symbol}','${d.signal}')">Re-enable</button></div>`).join("");
   return `<table><tr><th>Symbol</th><th>Signal</th><th class="num">Trades</th><th class="num">Win %</th><th class="num">Avg R</th><th class="num">Profit</th></tr>${rows}</table>${dis}`;
+}
+
+async function learningView() {
+  const L = await api(`/api/learning?account=${acc}`);
+  const statusCls = { active: "up", cautious: "warn", probation: "warn", off: "down" };
+  const regimes = Object.values(L.regimes).map((r) => `<span class="tag regime-${r.regime || "none"}" title="${esc(r.detail)}" style="margin-right:6px">${r.xm}: ${r.regime || "–"}</span>`).join("");
+  const states = L.states.length ? L.states.map((s) => `<tr><td>${s.signal}</td><td>${s.regime}</td>
+      <td class="${statusCls[s.status] || ""}"><b>${s.status}</b></td><td class="num">${s.risk_mult === 1 ? "full" : s.risk_mult === 0 ? "–" : "x" + s.risk_mult}</td>
+      <td class="num">${s.n}</td><td class="num ${cls(s.avg_r)}">${s.avg_r == null ? "–" : s.avg_r.toFixed(2)}</td>
+      <td class="wrap muted">${esc(s.reason)}${s.until ? " · until " + mtTime(s.until) : ""}</td>
+      <td>${s.status !== "active" ? `<button class="small" onclick="resetStrategy('${s.signal}','${s.regime}')">Reset</button>` : ""}</td></tr>`).join("")
+    : '<tr><td colspan="8" class="muted">No closed trades yet - each strategy is judged per market regime once it has trades.</td></tr>';
+  const runs = L.tuning.length ? L.tuning.map((r) => { const res = r.result || {};
+      const fmt = (p) => p ? `stop ${p.default_stop_atr} · target ${p.default_target_atr} · BE ${p.breakeven_at_r || "off"}` : "–";
+      const t = (m) => m ? `${m.total_r >= 0 ? "+" : ""}${m.total_r}R / ${m.trades}` : "–";
+      return `<tr><td>${mtTime(r.at)}</td><td class="${r.applied ? "up" : "muted"}">${r.applied ? "APPLIED" : "kept"}</td>
+        <td>${fmt(r.current)}</td><td>${fmt(r.best)}</td><td class="num">${t(res.train_best)}</td>
+        <td class="num">${t(res.test_current)}</td><td class="num">${t(res.test_best)}</td><td class="wrap muted">${esc(r.reason)}</td></tr>`; }).join("")
+    : '<tr><td colspan="8" class="muted">No tuning runs yet. It runs every Saturday 06:00 UTC, or press "Run tuner now".</td></tr>';
+  const e = L.exits;
+  return `<div style="padding:8px">
+    <p class="muted" style="margin:0 0 6px">How this account learns: every trade is tagged with its strategy and the market regime.
+      Strategies that lose in a regime are switched off there (then retried on probation at half risk); weak ones trade at half risk.
+      Every Saturday the tuner tests nearby stop/target settings on recent history and only applies them if they also win on newer data.</p>
+    <div style="margin:6px 0"><b>Market regime now (${L.timeframe === "5m" ? "M5" : "M15"}):</b> ${regimes}</div>
+    <div style="margin:6px 0"><b>Current exits:</b> stop ${e.default_stop_atr} ATR · target ${e.default_target_atr} ATR · breakeven ${e.breakeven_at_r || "off"}
+      · switching ${L.adaptive.enabled ? '<span class="up">on</span>' : '<span class="down">off</span>'}
+      · auto-tune ${L.adaptive.auto_tune ? '<span class="up">on</span>' : '<span class="down">off</span>'}
+      <button class="small" style="margin-left:8px" onclick="runTuner()" ${L.tuning_running ? "disabled" : ""}>${L.tuning_running ? "Tuning…" : "Run tuner now"}</button></div>
+    <b>Strategies by regime</b>
+    <table><tr><th>Strategy</th><th>Regime</th><th>Status</th><th class="num">Risk</th><th class="num">Trades</th><th class="num">Avg R</th><th>Why</th><th></th></tr>${states}</table>
+    <b style="display:block;margin-top:10px">Tuning runs (walk-forward)</b>
+    <table><tr><th>When</th><th>Result</th><th>Settings before</th><th>Best found</th><th class="num">Train best</th><th class="num">Test: current</th><th class="num">Test: best</th><th>Why</th></tr>${runs}</table>
+  </div>`;
+}
+
+async function resetStrategy(signal, regime) {
+  if (!confirm(`Reset ${signal} in ${regime} markets back to active?`)) return;
+  await api("/api/learning/reset", { method: "POST", body: { account: acc, signal, regime } }); renderTab();
+}
+async function runTuner() {
+  const r = await api(`/api/tune/${acc}`, { method: "POST" });
+  toast(r.started ? "Tuner started - takes a few minutes; results appear here and in the log" : r.reason);
+  setTimeout(renderTab, 1500);
 }
 
 async function playbookView() {
@@ -357,7 +403,7 @@ async function loadCompare() {
 // ------------------------------------------------------------------ start
 makeChart();
 selectAccount(["standard", "moderate", "aggressive", "compare"].includes(acc) ? acc : "standard");
-setInterval(() => { if (acc !== "compare") { loadState(); if (["journal", "scorecard", "ai"].includes(tab)) renderTab(); } }, 30000);
+setInterval(() => { if (acc !== "compare") { loadState(); if (["journal", "scorecard", "ai", "learning"].includes(tab)) renderTab(); } }, 30000);
 setInterval(() => { if (acc !== "compare" && state) loadChart(); }, 5 * 60000);
 setInterval(() => { if (acc === "compare") loadCompare(); }, 60000);
 </script>
