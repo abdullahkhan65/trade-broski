@@ -1,12 +1,12 @@
 """EUR/USD and GBP/USD from Kraken (public, no key, works from Pakistan).
 
 * WebSocket v2 `ticker` channel: best bid/ask on every change.
-* REST OHLC: 15m candles (Kraken returns the last 720 = 7.5 days; the bot keeps
+* REST OHLC: 5m/15m candles (Kraken returns the last 720 - 7.5 days of 15m; the bot keeps
   storing them, so its own history grows over time).
 
 Kraken's fiat pairs trade 24/7 and track the interbank rate closely. The bot
-only trades them during real forex hours and widens the spread to typical
-broker levels (settings -> Costs), so results aren't flattered.
+only trades them during real forex hours and applies XM's spread (settings ->
+Broker), so results aren't flattered.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import httpx
 import websockets
 
 from .binance import SSL_CTX
-from .prices import CANDLE_SECONDS, PriceCache
+from .prices import PriceCache, tf_seconds
 
 log = logging.getLogger("feeds.kraken")
 
@@ -69,10 +69,10 @@ class KrakenFeed:
             if sym and d.get("bid") and d.get("ask"):
                 self.cache.update(sym, float(d["bid"]), float(d["ask"]))
 
-    async def fetch_candles(self, symbol: str, count: int = 720) -> list[dict]:
+    async def fetch_candles(self, symbol: str, count: int = 720, tf: str = "15m") -> list[dict]:
         pair = self.symbols[symbol].replace("/", "")
         async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(f"{REST}/OHLC", params={"pair": pair, "interval": 15})
+            r = await client.get(f"{REST}/OHLC", params={"pair": pair, "interval": tf_seconds(tf) // 60})
             r.raise_for_status()
             data = r.json()
         if data.get("error"):
@@ -81,5 +81,5 @@ class KrakenFeed:
         rows = res[next(k for k in res if k != "last")]
         now = datetime.now(timezone.utc).timestamp()
         out = [{"t": int(k[0]), "o": float(k[1]), "h": float(k[2]), "l": float(k[3]), "c": float(k[4]),
-                "v": float(k[6])} for k in rows if int(k[0]) + CANDLE_SECONDS <= now]
+                "v": float(k[6])} for k in rows if int(k[0]) + tf_seconds(tf) <= now]
         return out[-count:]

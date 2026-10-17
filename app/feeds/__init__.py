@@ -1,5 +1,5 @@
 """Live price feeds. Every feed has `run_stream()` (runs forever, fills the
-PriceCache) and `fetch_candles(symbol, count)` (completed 15m candles, oldest first)."""
+PriceCache) and `fetch_candles(symbol, count, tf)` (completed candles, oldest first)."""
 from __future__ import annotations
 
 from ..instruments import INSTRUMENTS, Instrument
@@ -22,5 +22,5 @@ def build_feeds(cache: PriceCache) -> dict:
     }
 
 
-async def fetch_candles(feeds: dict, inst: Instrument, count: int | None = None) -> list[dict]:
-    return await feeds[inst.source].fetch_candles(inst.symbol, count or HISTORY_COUNT[inst.source])
+async def fetch_candles(feeds: dict, inst: Instrument, count: int | None = None, tf: str = "15m") -> list[dict]:
+    return await feeds[inst.source].fetch_candles(inst.symbol, count or HISTORY_COUNT[inst.source], tf=tf)

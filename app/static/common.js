@@ -37,7 +37,7 @@ function toast(msg) {
 }
 
 function nav(active) {
-  const links = [["/", "Dashboard"], ["/news", "News & events"], ["/settings", "Settings"]];
+  const links = [["/", "Terminal"], ["/news", "News & events"], ["/settings", "Settings"]];
   document.body.insertAdjacentHTML("afterbegin",
     `<nav><span class="brand">📈 AI Paper Trader</span>${links
       .map(([h, t]) => `<a href="${h}" class="${h === active ? "active" : ""}">${t}</a>`).join("")}

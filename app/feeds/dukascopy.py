@@ -3,7 +3,7 @@
 One file per instrument per day: 1-minute BID candles, LZMA-compressed, 24-byte
 big-endian records: (seconds from 00:00 UTC, open, close, low, high as int32
 scaled by the instrument's point, volume as float32). Month in the URL is 0-based.
-Weekend days are empty files. Minute candles are aggregated into 15m candles.
+Weekend days are empty files. Minute candles are aggregated into 5m/15m candles.
 """
 from __future__ import annotations
 
@@ -16,11 +16,8 @@ import httpx
 
 URL = "https://datafeed.dukascopy.com/datafeed/{sym}/{y}/{m:02d}/{d:02d}/BID_candles_min_1.bi5"
 RECORD = struct.Struct(">iiiiif")
-BUCKET = 15 * 60
-
-
-def parse_day(raw: bytes, day: date, point: float) -> list[dict]:
-    """Decompressed or compressed day file -> list of 15m candles."""
+def parse_day(raw: bytes, day: date, point: float, bucket: int = 15 * 60) -> list[dict]:
+    """Decompressed or compressed day file -> list of candles of `bucket` seconds."""
     if not raw:
         return []
     try:
@@ -33,7 +30,7 @@ def parse_day(raw: bytes, day: date, point: float) -> list[dict]:
         secs, o, c, lo, hi, vol = RECORD.unpack_from(raw, off)
         if vol <= 0:            # Dukascopy writes flat zero-volume minutes when the market is shut
             continue
-        t = base + secs - (base + secs) % BUCKET
+        t = base + secs - (base + secs) % bucket
         o, c, lo, hi = o / point, c / point, lo / point, hi / point
         b = buckets.get(t)
         if b is None:
@@ -47,7 +44,7 @@ def parse_day(raw: bytes, day: date, point: float) -> list[dict]:
 
 
 async def download(symbol: str, point: float, days: int, concurrency: int = 12,
-                   progress: bool = True) -> list[dict]:
+                   progress: bool = True, bucket: int = 15 * 60) -> list[dict]:
     end = datetime.now(timezone.utc).date() - timedelta(days=1)
     start = end - timedelta(days=days)
     all_days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
@@ -65,7 +62,7 @@ async def download(symbol: str, point: float, days: int, concurrency: int = 12,
                         results[d] = []
                         return
                     r.raise_for_status()
-                    results[d] = parse_day(r.content, d, point)
+                    results[d] = parse_day(r.content, d, point, bucket)
                     return
                 except (httpx.HTTPError, lzma.LZMAError):
                     await asyncio.sleep(1 + attempt * 2)

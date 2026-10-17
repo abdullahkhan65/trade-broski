@@ -3,7 +3,7 @@
 Kraken's USD/JPY market is too thin to use, and OANDA isn't available in
 Pakistan, so USD/JPY falls back to Yahoo's chart API:
 * polled every 15 seconds (it's not a stream, so prices lag a little),
-* mid price only - the simulated broker spread from settings is applied around it,
+* mid price only - the XM spread from settings is applied around it,
 * unofficial: Yahoo can rate-limit or change it without notice.
 """
 from __future__ import annotations
@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import httpx
 
-from .prices import CANDLE_SECONDS, PriceCache
+from .prices import PriceCache, tf_seconds
 
 log = logging.getLogger("feeds.yahoo")
 
@@ -56,11 +56,11 @@ class YahooFeed:
                         log.debug("Yahoo %s failed: %s", ysym, e)
                 await asyncio.sleep(POLL_SECONDS)
 
-    async def fetch_candles(self, symbol: str, count: int = 2000) -> list[dict]:
-        rng = "60d" if count > 400 else "5d"     # Yahoo keeps 60 days of 15m data
+    async def fetch_candles(self, symbol: str, count: int = 2000, tf: str = "15m") -> list[dict]:
+        rng = "60d" if count > 400 else "5d"     # Yahoo keeps 60 days of intraday data
         async with httpx.AsyncClient(timeout=20, headers=UA) as client:
             r = await client.get(CHART.format(symbol=self.symbols[symbol]),
-                                 params={"interval": "15m", "range": rng})
+                                 params={"interval": tf, "range": rng})
             r.raise_for_status()
             res = r.json()["chart"]["result"][0]
         q = res["indicators"]["quote"][0]
@@ -68,7 +68,7 @@ class YahooFeed:
         out = []
         for i, t in enumerate(res.get("timestamp") or []):
             o, h, l, c = q["open"][i], q["high"][i], q["low"][i], q["close"][i]
-            if None in (o, h, l, c) or t + CANDLE_SECONDS > now:
+            if None in (o, h, l, c) or t + tf_seconds(tf) > now:
                 continue
             out.append({"t": int(t), "o": float(o), "h": float(h), "l": float(l), "c": float(c),
                         "v": float(q["volume"][i] or 0)})

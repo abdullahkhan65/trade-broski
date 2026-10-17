@@ -53,7 +53,8 @@ sqlite3 data/trader.db "select symbol, side, pnl_usd, exit_reason from trades or
 | A price shows "stale" | That feed is reconnecting. Check `journalctl -u trade-broski` and run `python -m app.check`. USD/JPY (Yahoo) is polled, so it updates less often |
 | Backtest download is slow or times out | Dukascopy is slow (about 5s per day). Re-run it: finished days are cached |
 | BTC feed keeps reconnecting, log says 451 | Binance blocks the server's region. The Bybit fallback is used automatically; consider a server in another region |
-| No trades for days | Look at "last check" under each price on the dashboard (e.g. "outside London/NY session", "dead market") and at the decisions table. Conservative settings and the margin cap skip a lot by design |
+| No trades for days | Check the account's **Journal** tab and the "last check" note above the chart (e.g. "outside London/NY session", "dead market", "0.01 lot would risk 4.8%"). Standard skips gold/BTC on $250 by design (see SETTINGS.md) |
+| Want to restart one mode's test | Terminal → that account → **Account** tab → Reset account to $250 |
 | "AI blocked: daily AI call cap reached" | Raise the cap in Settings → AI, or lower the news digest frequency |
 | "AI error -> SKIP" | Check the Anthropic Console (credit, spend limit). The bot keeps protecting open positions without AI |
 | Dashboard asks for login repeatedly | Wrong `DASHBOARD_USER`/`DASHBOARD_PASSWORD`. After editing `.env`, run `systemctl restart trade-broski` |

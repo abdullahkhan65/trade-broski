@@ -1,19 +1,27 @@
-# AI Paper Trader v2: gold, forex and BTC on a $8/month budget
+# AI Paper Trader v2: XM-style paper trading, three modes side by side
 
-A 24/7 **paper-trading** bot for 5 instruments. It trades leveraged long and short on a $250 virtual balance, and runs on a ~$2.50/month VPS.
+A 24/7 **paper-trading** bot for GOLD, EURUSD, GBPUSD, BTCUSD (and optionally USDJPY), modelled on an **XM Standard MT5 account at 1:1000**: lots, contract sizes, spreads in points, swaps, margin and stop-out. It runs **three $250 paper accounts at the same time** on the same live prices, so you can compare trading styles:
 
-| Instrument | Live price source (free, no key) | Traded |
+| Account | Style |
+|---|---|
+| **Standard** | M15, 1% risk, A-grade setups only, skips trades the 0.01 lot can't size correctly |
+| **Moderate** | M15, 1.5% risk, accepts 0.01 lot up to 3% risk, news-momentum trades |
+| **Aggressive scalper** | M5, 2% risk, quick targets, breakeven at +1R, stops for the day at +3% |
+
+Prices are free and need no keys:
+
+| Symbol | Live price source | Traded |
 |---|---|---|
-| XAU/USD (gold) | Binance XAUUSDT gold perpetual, WebSocket (Bybit fallback) | ~23h/day, Mon–Fri |
-| EUR/USD, GBP/USD | Kraken, WebSocket | 24h/day, Mon–Fri |
-| USD/JPY (off by default) | Yahoo Finance, polled every 15s | 24h/day, Mon–Fri |
-| BTC/USDT perpetual | Binance futures WebSocket (Bybit fallback) | 24/7 |
+| GOLD | Binance XAUUSDT gold perpetual, WebSocket (Bybit fallback) | ~23h/day, Mon–Fri |
+| EURUSD, GBPUSD | Kraken, WebSocket | 24h/day, Mon–Fri |
+| USDJPY (off by default) | Yahoo Finance, polled every 15s | 24h/day, Mon–Fri |
+| BTCUSD | Binance futures WebSocket (Bybit fallback) | 24/7 |
 
-OANDA isn't available from Pakistan, so prices come from public exchange feeds instead. Gold and forex still follow real market hours, pay CFD-style swap and use broker-level spreads, so the paper results stay honest. Two years of gold/forex history for backtests comes from Dukascopy's free datafeed.
+XM's spreads are applied on top of the feed price. Gold and forex freeze at Friday's close like on MT5, and weekend candles are dropped.
 
-**How it decides.** Free coded signals check every closed 15-minute candle. When a signal fires and passes the news and risk checks, **Claude Haiku 5.5** is asked TAKE or SKIP. The risk engine then sizes the trade from the stop distance, inside hard caps that the AI cannot change. Headlines and the economic calendar feed every decision. Lessons from closed trades are rewritten into a weekly playbook.
+**How it decides.** Free coded signals check every closed candle (M15, or M5 for the scalper). When a signal passes the news and risk checks, **Claude Haiku 5.5** is asked TAKE or SKIP, judging it against **that account's own playbook**. The risk engine then sizes the trade in lots, inside hard caps that the AI cannot change. Each account learns from its own trades: daily lessons, then a weekly playbook rewrite.
 
-> **This is paper trading with virtual money.** It is not financial advice. The app refuses to start unless `PAPER_ONLY=true`, and it contains no live-order code. Leverage multiplies losses as fast as gains. The job of this MVP is to prove, over at least 3 months on paper, whether the bot beats doing nothing.
+> **This is paper trading with virtual money.** It is not financial advice. The app refuses to start unless `PAPER_ONLY=true` and contains no live-order code. Most leveraged retail accounts lose money; prove an edge on paper for months first.
 
 ---
 
@@ -35,8 +43,8 @@ Run the tests with `pytest -q`. Backtest the signals with `python -m app.backtes
 
 | Page | What it's for |
 |---|---|
-| `/` **Dashboard** | Equity, P&L, margin, live prices (updated every second), equity curve vs buy-and-hold BTC/gold, positions, trade log with Haiku's reasons, every signal and why it was taken or skipped, scorecard, playbook, AI budget, and the pause / close all / kill switch controls |
-| `/settings` **Settings** | One-click **Conservative / Balanced / Aggressive** profiles, plus every rule editable on its own: risk %, leverage caps, loss limits, signals, AI confidence and budget, news blackout, weekend behaviour, swap rates. Changes apply live, every version is kept, and you can roll back |
+| `/` **Terminal** | MT5-style: account tabs (Standard / Moderate / Aggressive / ⚖ Compare), Market Watch (bid, ask, XM spread, live/closed, 0.01-lot risk), candlestick chart (M5/M15) with entry/SL/TP lines, Toolbox with **Trade · History · Journal · Scorecard · Playbook · AI & budget · Account**, and an MT5 status bar (Balance, Equity, Margin, Free margin, Margin level) |
+| `/settings` **Settings** | The three modes side by side (every rule editable per mode, reset to default), XM broker specs (leverage, spreads, swaps, stop-out), instruments, news, AI budget. Changes apply live and every version is kept for rollback |
 | `/news` **News & events** | The AI's bias and risk for each instrument, the latest headlines tagged by instrument, and the economic calendar |
 
 Telegram alerts cover trades opened and closed, a daily summary and review, loss limits, the kill switch, budget warnings, feeds going down and nightly backups. It also accepts the commands `/status /pause /resume /closeall`.
@@ -57,10 +65,10 @@ Telegram alerts cover trades opened and closed, a daily summary and review, loss
 | Item | $/month |
 |---|---|
 | Netcup VPS nano (or Hetzner CX23 fallback ~$6.40) | ~2.50 |
-| Haiku 5.5: trade gate (≤20 calls/day) | ~0.30 |
-| Haiku 5.5: hourly news digest | ~0.30 |
-| Haiku 5.5: daily review and weekly playbook | ~0.15 |
+| Haiku 5.5: trade gate, 3 accounts (~30–60 calls/day) | ~0.60 |
+| Haiku 5.5: hourly news digest (shared) | ~0.30 |
+| Haiku 5.5: daily review and weekly playbook, per account | ~0.30 |
 | Binance, Bybit, Kraken, Yahoo, Dukascopy, Telegram, news feeds, calendar, Caddy/sslip.io HTTPS | 0 |
-| **Total** | **~$3.25** |
+| **Total** | **~$3.70** (AWS free plan: ~$1.20) |
 
 The AI can never push the bill past $8, because four separate guards stop it: a daily call cap, a monthly $ budget in settings (hard max $5), a Console spend limit, and prepaid credit with auto-reload off. Details are in [docs/OPERATIONS.md](docs/OPERATIONS.md#costs).

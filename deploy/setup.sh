@@ -55,7 +55,7 @@ IP=$(curl -s https://api.ipify.org || echo "YOUR_IP")
 cat <<MSG
 
 Done. Next:
- 1. nano $APP_DIR/.env            (OANDA, Anthropic, Telegram, DASHBOARD_PASSWORD)
+ 1. nano $APP_DIR/.env            (Anthropic key, DASHBOARD_PASSWORD, optional Telegram)
  2. sudo -u trader $APP_DIR/.venv/bin/python -m app.check   (run from $APP_DIR)
  3. cp $APP_DIR/deploy/Caddyfile /etc/caddy/Caddyfile
     sed -i "s/YOUR_DOMAIN/${IP//./-}.sslip.io/" /etc/caddy/Caddyfile && systemctl reload caddy

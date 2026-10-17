@@ -4,244 +4,362 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Paper Trader</title>
-<link rel="stylesheet" href="/static/style.css">
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<link rel="stylesheet" href="/static/mt5.css">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="/static/common.js"></script>
 </head>
 <body>
-<main>
-  <div id="warnings"></div>
-
-  <section class="panel">
-    <div class="stats" id="stats"></div>
-  </section>
-
-  <section class="panel" style="margin-top:12px">
-    <h2>Live prices <span class="muted" id="session" style="text-transform:none"></span></h2>
-    <div class="quotes" id="quotes"></div>
-  </section>
-
-  <div class="grid cols-2" style="margin-top:12px">
-    <section class="panel">
-      <h2>Equity vs buy-and-hold</h2>
-      <canvas id="equity" height="110"></canvas>
-    </section>
-    <section class="panel">
-      <h2>Controls</h2>
-      <div class="controls">
-        <button onclick="control('pause')">⏸ Pause</button>
-        <button onclick="control('resume')">▶️ Resume</button>
-        <button onclick="control('close_all', 'Close ALL open positions at market?')">Close all</button>
-        <button class="danger" onclick="control('kill', 'KILL SWITCH: close everything and halt the bot?')">🛑 Kill switch</button>
-      </div>
-      <p class="muted" style="font-size:12px">Edit caps, leverage and how aggressive the bot is on the <a href="/settings">Settings</a> page.</p>
-      <h2 style="margin-top:16px">AI budget</h2>
-      <div id="budget"></div>
-    </section>
+<div class="terminal" id="terminal">
+  <div class="topbar">
+    <span class="brand">📈 Paper Trader</span>
+    <span id="acct-tabs"></span>
+    <span class="acct" data-acc="compare" onclick="selectAccount('compare')">⚖ Compare</span>
+    <span class="right">
+      <a href="/news">News</a><a href="/settings">Settings</a>
+      <span id="clock"></span>
+    </span>
   </div>
 
-  <section class="panel" style="margin-top:12px">
-    <h2>Open positions</h2>
-    <div class="table-wrap"><table id="positions"></table></div>
-  </section>
-
-  <section class="panel" style="margin-top:12px">
-    <h2>Trade log</h2>
-    <div class="table-wrap"><table id="trades"></table></div>
-  </section>
-
-  <div class="grid cols-2" style="margin-top:12px">
-    <section class="panel">
-      <h2>Signals & AI decisions</h2>
-      <div class="table-wrap" style="max-height:420px;overflow-y:auto"><table id="decisions"></table></div>
-    </section>
-    <section class="panel">
-      <h2>Scorecard</h2>
-      <div class="table-wrap"><table id="scorecard"></table></div>
-      <div id="disabled"></div>
-    </section>
+  <div class="panel marketwatch">
+    <div class="panel-title">Market Watch: <span id="mw-time" class="muted" style="font-weight:normal"></span></div>
+    <div id="warnings"></div>
+    <div class="panel-body"><table id="mw"></table></div>
   </div>
 
-  <section class="panel" style="margin-top:12px">
-    <h2>Playbook <span class="muted" style="text-transform:none">(what the AI has learned; rewritten weekly)</span></h2>
-    <div class="grid cols-2">
-      <div>
-        <pre class="playbook" id="playbook"></pre>
-        <div class="controls" style="margin-top:8px">
-          <button class="small" onclick="editPlaybook()">Edit</button>
-        </div>
-      </div>
-      <div>
-        <h2>Recent lessons</h2>
-        <div id="lessons" style="max-height:220px;overflow-y:auto"></div>
-        <h2 style="margin-top:12px">Versions</h2>
-        <div id="pbversions"></div>
-      </div>
+  <div class="panel chartpane">
+    <div class="chart-toolbar">
+      <span class="title" id="chart-title"></span>
+      <button class="small" data-tf="5m" onclick="setTf('5m')">M5</button>
+      <button class="small" data-tf="15m" onclick="setTf('15m')">M15</button>
+      <span class="muted" id="chart-note" style="margin-left:8px"></span>
     </div>
-  </section>
-</main>
+    <div id="chart"></div>
+  </div>
+
+  <div class="panel toolbox">
+    <div class="panel-body" id="tb-body"></div>
+    <div class="tabs" id="tb-tabs"></div>
+  </div>
+
+  <div class="panel compare" id="compare">
+    <div class="panel-title">Compare accounts: same prices, three rule sets</div>
+    <div class="panel-body">
+      <div class="cards" id="cmp-cards"></div>
+      <div id="cmp-chart" style="height:340px;margin:0 8px"></div>
+      <p class="muted" style="padding:0 8px">Equity of each $250 account vs. holding BTC or gold with $250 (no leverage). Updated every 15 min.</p>
+    </div>
+  </div>
+
+  <div class="statusbar" id="statusbar"></div>
+</div>
 
 <script>
-nav("/");
-let chart, state, lastPx = {};
+const LABEL = { standard: "Standard", moderate: "Moderate", aggressive: "Aggressive" };
+const TF_SEC = { "5m": 300, "15m": 900 };
+let acc = (location.hash || "#standard").slice(1);
+let sym = localStorage.getItem("sym") || "XAU_USD";
+let tf = null, tab = localStorage.getItem("tab") || "trade";
+let state = null, chart, series, priceLines = [], lastBar = null, lastPx = {}, es = null, cmpChart;
 
-async function control(action, confirmMsg) {
-  if (confirmMsg && !confirm(confirmMsg)) return;
-  try { const r = await api(`/api/control/${action}`, { method: "POST", body: {} }); toast(`${action}: ${JSON.stringify(r)}`); loadState(); }
-  catch (e) { toast("Error: " + e.message); }
+// ------------------------------------------------------------------ helpers
+const f2 = (v) => (v == null ? "–" : Number(v).toFixed(2));
+const px = (v, d) => (v == null ? "–" : Number(v).toFixed(d));
+const side = (s) => (s === "LONG" ? '<span class="buy">buy</span>' : '<span class="sell">sell</span>');
+const mtTime = (iso) => { if (!iso) return "–"; const d = new Date(iso); return d.toISOString().slice(0, 19).replace("T", " ").replaceAll("-", "."); };
+setInterval(() => { const d = new Date();
+  document.getElementById("clock").textContent = d.toUTCString().slice(17, 25) + " UTC · " +
+    d.toLocaleTimeString([], { timeZone: "Asia/Karachi", hour: "2-digit", minute: "2-digit" }) + " PKT"; }, 1000);
+
+// ------------------------------------------------------------------ top bar
+function renderTabs(accounts) {
+  document.getElementById("acct-tabs").innerHTML = Object.values(accounts).map((a) =>
+    `<span class="acct ${a.id === acc ? "active" : ""}" onclick="selectAccount('${a.id}')" title="${esc(a.status_reason || a.status)}">
+      <span class="dot ${a.status}"></span>${esc(a.label)} <span class="muted">${a.timeframe === "5m" ? "M5" : "M15"}</span>
+      <b class="${cls(a.pnl_total)}">${f2(a.equity)}</b></span>`).join("");
+  document.querySelector('[data-acc="compare"]').classList.toggle("active", acc === "compare");
 }
 
-async function closePos(id) {
-  if (!confirm("Close this position at market?")) return;
-  await api("/api/control/close_position", { method: "POST", body: { id } });
-  loadState(); loadTrades();
+function selectAccount(a) {
+  acc = a; location.hash = a;
+  document.getElementById("terminal").classList.toggle("comparing", a === "compare");
+  if (a === "compare") { loadCompare(); return; }
+  tf = null; loadState().then(() => { loadChart(); renderTab(); }); connectStream();
 }
 
-function renderStats(a) {
-  const ml = a.margin_level_pct == null ? "–" : pct(a.margin_level_pct, 0);
-  document.getElementById("stats").innerHTML = [
-    ["Equity", usd(a.equity), ""],
-    ["P&L since start", `${usd(a.pnl_total, true)} <span style="font-size:13px">(${pct(100 * a.pnl_total / a.starting_balance)})</span>`, cls(a.pnl_total)],
-    ["Today", usd(a.pnl_today, true), cls(a.pnl_today)],
-    ["Margin used", pct(a.margin_used_pct, 0), a.margin_used_pct > 40 ? "warn" : ""],
-    ["Margin level", ml, ""],
-    ["Drawdown from peak", pct(a.drawdown_pct), a.drawdown_pct > 10 ? "down" : ""],
-    ["Status", `<span class="badge ${a.status}">${a.status}</span><div class="muted" style="font-size:12px">${esc(a.status_reason || "")}</div>`, ""],
-    ["Profile", `${esc(a.profile)}<div class="muted" style="font-size:12px">${a.trading_mode === "auto" ? "auto-trading" : "signals only"}</div>`, ""],
-  ].map(([l, v, c]) => `<div class="stat"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`).join("");
-}
-
-function renderQuotes(q) {
-  document.getElementById("quotes").innerHTML = Object.entries(q).map(([sym, x]) => {
-    const prev = lastPx[sym]; lastPx[sym] = x.mid;
-    const color = prev == null || x.mid == null ? "" : x.mid > prev ? "up" : x.mid < prev ? "down" : "";
-    const status = !x.open ? '<span class="badge">closed</span>' : x.age != null && x.age < 30 ? '<span class="badge active">live</span>' : '<span class="badge paused">stale</span>';
-    return `<div class="quote">
-      <div class="sym">${esc(x.display)} ${status}</div>
-      <div class="px ${color}">${fmtPx(x.mid, x.decimals)}</div>
-      <div class="meta">bid ${fmtPx(x.bid, x.decimals)} · ask ${fmtPx(x.ask, x.decimals)}${x.mark ? " · mark " + fmtPx(x.mark, 1) : ""}</div>
-      <div class="meta">${x.enabled ? "trading on" : "trading off"} · last check: ${esc(x.last_check || "–")}</div>
-    </div>`;
+// ------------------------------------------------------------- market watch
+function renderMW(quotes) {
+  const rows = Object.entries(quotes).map(([s, q]) => {
+    const prev = lastPx[s]; lastPx[s] = q.bid;
+    const fl = prev == null || q.bid == null ? "" : q.bid > prev ? "flash-up" : q.bid < prev ? "flash-down" : "";
+    const status = !q.open ? '<span class="tag closed">closed</span>' : q.age != null && q.age < 30 ? '<span class="tag live">live</span>' : '<span class="tag">stale</span>';
+    const r = q.min_lot_risk;
+    const riskTag = r == null ? "" : `<span class="tag ${r <= 2 ? "risk-ok" : r <= 5 ? "risk-high" : "risk-no"}" title="Risk of 0.01 lot with this account's default stop">0.01 = ${r.toFixed(1)}%</span>`;
+    return `<tr class="click ${s === sym ? "sel" : ""}" onclick="selectSymbol('${s}')">
+      <td><div class="mw-sym">${q.xm} ${q.enabled ? "" : '<span class="tag">off</span>'}</div><div class="mw-sub">${status} ${riskTag}</div></td>
+      <td class="num ${fl}">${px(q.bid, q.digits)}</td><td class="num ${fl}">${px(q.ask, q.digits)}</td>
+      <td class="num muted">${q.spread ?? "–"}</td></tr>`;
   }).join("");
+  document.getElementById("mw").innerHTML = `<tr><th>Symbol</th><th class="num">Bid</th><th class="num">Ask</th><th class="num">Spread</th></tr>` + rows;
+  const q = quotes[sym];
+  document.getElementById("chart-note").textContent = q && q.last_check ? `last check (${LABEL[acc]}): ${q.last_check}` : "";
 }
 
-function renderPositions(rows) {
-  const t = document.getElementById("positions");
-  if (!rows.length) { t.innerHTML = '<tr><td class="muted">No open positions</td></tr>'; return; }
-  t.innerHTML = `<tr><th>Instrument</th><th>Side</th><th>Lev</th><th>Units</th><th>Entry</th><th>Live</th><th>Stop</th><th>Target</th>
-    <th>Unrealized</th><th>Swap/funding</th><th>Signal</th><th>AI reason</th><th></th></tr>` +
-    rows.map((p) => `<tr>
-      <td>${p.symbol}</td><td class="${p.side === "LONG" ? "up" : "down"}">${p.side}</td><td>${p.leverage}x</td><td>${(+p.units).toPrecision(4)}</td>
-      <td>${fmtPx(p.entry, p.decimals)}</td><td id="pos-px-${p.id}">${fmtPx(p.price, p.decimals)}</td>
-      <td>${fmtPx(p.stop, p.decimals)}</td><td>${fmtPx(p.target, p.decimals)}</td>
-      <td id="pos-u-${p.id}" class="${cls(p.unrealized)}">${usd(p.unrealized, true)}</td>
-      <td>${usd(p.swap + p.funding, true)}</td><td>${p.signal}</td><td class="wrap">${esc(p.ai_reason)}</td>
-      <td><button class="small" onclick="closePos(${p.id})">Close</button></td></tr>`).join("");
+function selectSymbol(s) { sym = s; localStorage.setItem("sym", s); renderMW(state.quotes); loadChart(); }
+
+// ------------------------------------------------------------------- chart
+function makeChart() {
+  const el = document.getElementById("chart");
+  chart = LightweightCharts.createChart(el, {
+    layout: { background: { color: "#0b0e13" }, textColor: "#9aa3b2" },
+    grid: { vertLines: { color: "#161b24" }, horzLines: { color: "#161b24" } },
+    timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#2a303c" },
+    rightPriceScale: { borderColor: "#2a303c" }, crosshair: { mode: 0 },
+    autoSize: true,
+  });
+  series = chart.addCandlestickSeries({ upColor: "#26a69a", downColor: "#ef5350", borderVisible: false,
+    wickUpColor: "#26a69a", wickDownColor: "#ef5350" });
 }
 
-function renderBudget(b) {
-  const used = Math.min(100, 100 * b.month_spend / Math.max(b.monthly_budget, 0.0001));
-  document.getElementById("budget").innerHTML = `
-    <div>${usd(b.month_spend)} of ${usd(b.monthly_budget)} this month <span class="muted">(${b.model})</span></div>
-    <div class="bar"><div style="width:${used}%;background:${used > 80 ? "var(--warn)" : "var(--accent)"}"></div></div>
-    <div class="muted" style="margin-top:6px">AI calls today: ${b.calls_today} / ${b.max_calls_per_day}</div>
-    ${b.blocked ? `<div class="warn" style="margin-top:6px">AI blocked: ${esc(b.blocked)}</div>` : ""}
-    <div class="muted" style="font-size:12px;margin-top:6px">${b.by_purpose.map((p) => `${p.purpose}: ${p.calls} calls, $${(p.cost || 0).toFixed(4)}`).join(" · ")}</div>`;
+async function loadChart() {
+  if (!state) return;
+  tf = tf || state.account.timeframe;
+  document.querySelectorAll("[data-tf]").forEach((b) => b.classList.toggle("on", b.dataset.tf === tf));
+  const q = state.quotes[sym];
+  document.getElementById("chart-title").textContent = `${q.xm}, ${tf === "5m" ? "M5" : "M15"}`;
+  const rows = await api(`/api/candles?symbol=${sym}&tf=${tf}&n=400`);
+  const digits = q.digits;
+  series.applyOptions({ priceFormat: { type: "price", precision: digits, minMove: Math.pow(10, -digits) } });
+  const data = rows.map((r) => ({ time: r.t, open: r.o, high: r.h, low: r.l, close: r.c }));
+  series.setData(data);
+  lastBar = data.length ? { ...data[data.length - 1] } : null;
+  drawPositionLines();
 }
 
-async function loadState() {
-  state = await api("/api/state");
-  document.getElementById("warnings").innerHTML = state.config_warnings.map((w) => `<div class="alert">⚠️ ${esc(w)}</div>`).join("");
-  document.getElementById("session").textContent = `· session: ${state.session}` + (state.funding_rate != null ? ` · BTC funding ${(state.funding_rate * 100).toFixed(4)}%/8h` : "");
-  renderStats(state.account); renderQuotes(state.quotes); renderPositions(state.positions); renderBudget(state.budget);
-}
+function setTf(t) { tf = t; loadChart(); }
 
-async function loadEquity() {
-  const rows = await api("/api/equity?days=120");
-  const labels = rows.map((r) => time(r.at));
-  const ds = [
-    { label: "Bot", data: rows.map((r) => r.equity), borderColor: "#4c8dff", borderWidth: 2 },
-    { label: "BTC buy & hold", data: rows.map((r) => r.btc_benchmark), borderColor: "#d29922", borderWidth: 1 },
-    { label: "Gold buy & hold", data: rows.map((r) => r.gold_benchmark), borderColor: "#c9a227", borderDash: [4, 3], borderWidth: 1 },
-  ].map((d) => ({ ...d, pointRadius: 0, tension: 0.2 }));
-  if (chart) { chart.data.labels = labels; chart.data.datasets = ds; chart.update(); return; }
-  chart = new Chart(document.getElementById("equity"), {
-    type: "line", data: { labels, datasets: ds },
-    options: { animation: false, interaction: { mode: "index", intersect: false },
-      scales: { x: { ticks: { color: "#8b95a5", maxTicksLimit: 8 }, grid: { color: "#2a313c" } },
-                y: { ticks: { color: "#8b95a5" }, grid: { color: "#2a313c" } } },
-      plugins: { legend: { labels: { color: "#e6e9ee" } } } },
+function drawPositionLines() {
+  priceLines.forEach((l) => series.removePriceLine(l)); priceLines = [];
+  (state.positions || []).filter((p) => p.symbol === sym).forEach((p) => {
+    const lbl = `#${p.id} ${p.side === "LONG" ? "buy" : "sell"} ${p.lots.toFixed(2)}`;
+    priceLines.push(series.createPriceLine({ price: p.entry, color: "#8a93a3", lineWidth: 1, lineStyle: 0, title: lbl }));
+    priceLines.push(series.createPriceLine({ price: p.stop, color: "#ef5350", lineWidth: 1, lineStyle: 2, title: "SL" }));
+    priceLines.push(series.createPriceLine({ price: p.target, color: "#26a69a", lineWidth: 1, lineStyle: 2, title: "TP" }));
   });
 }
 
-async function loadTrades() {
-  const rows = await api("/api/trades?limit=100");
-  const t = document.getElementById("trades");
-  if (!rows.length) { t.innerHTML = '<tr><td class="muted">No closed trades yet</td></tr>'; return; }
-  t.innerHTML = `<tr><th>Closed</th><th>Instrument</th><th>Side</th><th>Entry → Exit</th><th>P&L</th><th>R</th><th>Fees</th><th>Swap+funding</th><th>Exit</th><th>Signal</th><th>Haiku's reason</th></tr>` +
-    rows.map((r) => `<tr><td>${time(r.closed_at)}</td><td>${r.symbol}</td><td>${r.side}</td><td>${r.entry} → ${(+r.exit).toPrecision(6)}</td>
-      <td class="${cls(r.pnl_usd)}">${usd(r.pnl_usd, true)}</td><td class="${cls(r.pnl_r)}">${r.pnl_r == null ? "–" : r.pnl_r.toFixed(2)}</td>
-      <td>${usd(r.fees)}</td><td>${usd(r.swap + r.funding, true)}</td><td>${esc(r.exit_reason)}</td><td>${r.signal}</td><td class="wrap">${esc(r.ai_reason)}</td></tr>`).join("");
+function tickChart(q) {
+  if (!lastBar || !q || q.bid == null || !q.open) return;
+  const now = Math.floor(Date.now() / 1000), sec = TF_SEC[tf];
+  if (now >= lastBar.time + sec) {
+    const t = now - (now % sec);
+    lastBar = { time: t, open: q.bid, high: q.bid, low: q.bid, close: q.bid };
+  } else {
+    lastBar.close = q.bid; lastBar.high = Math.max(lastBar.high, q.bid); lastBar.low = Math.min(lastBar.low, q.bid);
+  }
+  series.update(lastBar);
 }
 
-async function loadDecisions() {
-  const rows = await api("/api/decisions?limit=100");
-  const t = document.getElementById("decisions");
-  if (!rows.length) { t.innerHTML = '<tr><td class="muted">No signals yet - the engine checks every closed 15m candle.</td></tr>'; return; }
-  t.innerHTML = `<tr><th>Time</th><th>Inst</th><th>Signal</th><th>AI</th><th>Result</th></tr>` +
-    rows.map((r) => `<tr><td>${time(r.at)}</td><td>${r.symbol} ${r.side}</td><td>${r.signal}</td><td>${r.ai_used ? "🤖" : "–"}</td>
-      <td class="wrap ${r.accepted ? "up" : "muted"}">${r.accepted ? "TAKEN" : esc(r.reject_reason)}</td></tr>`).join("");
+// ------------------------------------------------------------- status bar
+function renderStatus(a) {
+  const ml = a.margin_level == null ? "–" : a.margin_level.toFixed(2) + " %";
+  document.getElementById("statusbar").innerHTML = `
+    <b>${esc(a.label)}</b><span>Balance: <b>${f2(a.balance)} USD</b></span><span>Equity: <b>${f2(a.equity)}</b></span>
+    <span>Margin: ${f2(a.margin)}</span><span>Free margin: ${f2(a.free_margin)}</span><span>Margin level: ${ml}</span>
+    <span>Today: <b class="${cls(a.pnl_today)}">${usd(a.pnl_today, true)}</b></span>
+    <span>Since start: <b class="${cls(a.pnl_total)}">${usd(a.pnl_total, true)} (${pct(100 * a.pnl_total / a.starting_balance)})</b></span>
+    <span>Status: <b class="${a.status === "active" ? "up" : a.status === "halted" ? "down" : "warn"}">${a.status}</b> ${esc(a.status_reason || "")}</span>
+    <span>${a.trading_mode === "auto" ? "auto-trading" : "signals only"} · XM Standard</span>`;
 }
 
-async function loadScorecard() {
-  const s = await api("/api/scorecard");
-  const t = document.getElementById("scorecard");
-  t.innerHTML = s.rows.length ? `<tr><th>Inst</th><th>Signal</th><th>Trades</th><th>Win %</th><th>Avg R</th><th>P&L</th></tr>` +
-    s.rows.map((r) => `<tr><td>${r.symbol}</td><td>${r.signal}${r.disabled ? ' <span class="tag">off</span>' : ""}</td><td>${r.n}</td>
-      <td>${(100 * r.win_rate).toFixed(0)}%</td><td class="${cls(r.avg_r)}">${(r.avg_r || 0).toFixed(2)}</td><td class="${cls(r.pnl)}">${usd(r.pnl, true)}</td></tr>`).join("")
-    : '<tr><td class="muted">No trades yet</td></tr>';
-  document.getElementById("disabled").innerHTML = s.disabled.map((d) =>
-    `<div class="muted" style="margin-top:8px">Auto-disabled: ${d.symbol} ${d.signal} (${esc(d.reason)})
-     <button class="small" onclick="enableSignal('${d.symbol}','${d.signal}')">Re-enable</button></div>`).join("");
+// ----------------------------------------------------------------- toolbox
+const TABS = [["trade", "Trade"], ["history", "History"], ["journal", "Journal"], ["scorecard", "Scorecard"],
+              ["playbook", "Playbook"], ["ai", "AI & budget"], ["controls", "Account"]];
+
+function renderTabsBar() {
+  document.getElementById("tb-tabs").innerHTML = TABS.map(([k, t]) =>
+    `<span class="tab ${k === tab ? "active" : ""}" onclick="setTab('${k}')">${t}</span>`).join("");
+}
+function setTab(t) { tab = t; localStorage.setItem("tab", t); renderTabsBar(); renderTab(); }
+
+async function renderTab() {
+  renderTabsBar();
+  const body = document.getElementById("tb-body");
+  if (tab === "trade") body.innerHTML = tradeTable();
+  if (tab === "history") body.innerHTML = await historyTable();
+  if (tab === "journal") body.innerHTML = await journalTable();
+  if (tab === "scorecard") body.innerHTML = await scorecardTable();
+  if (tab === "playbook") body.innerHTML = await playbookView();
+  if (tab === "ai") body.innerHTML = aiView();
+  if (tab === "controls") body.innerHTML = controlsView();
 }
 
-async function enableSignal(symbol, signal) {
-  await api("/api/scorecard/enable", { method: "POST", body: { symbol, signal } }); loadScorecard();
+function tradeTable() {
+  const a = state.account, rows = state.positions;
+  const head = `<tr><th>Symbol</th><th>Ticket</th><th>Time</th><th>Type</th><th class="num">Volume</th><th class="num">Price</th>
+    <th class="num">S / L</th><th class="num">T / P</th><th class="num">Price</th><th class="num">Swap</th><th class="num">Profit</th><th>Comment</th><th></th></tr>`;
+  const body = rows.map((p) => `<tr>
+    <td><b>${p.xm}</b></td><td>${p.id}</td><td>${mtTime(p.opened_at)}</td><td>${side(p.side)}</td><td class="num">${p.lots.toFixed(2)}</td>
+    <td class="num">${px(p.entry, p.digits)}</td><td class="num" id="sl-${p.id}">${px(p.stop, p.digits)}</td><td class="num">${px(p.target, p.digits)}</td>
+    <td class="num" id="px-${p.id}">${px(p.price, p.digits)}</td><td class="num">${f2(p.swap)}</td>
+    <td class="num ${cls(p.profit)}" id="pf-${p.id}">${f2(p.profit)}</td><td class="wrap muted">${esc(p.signal)}: ${esc(p.ai_reason)}</td>
+    <td><button class="small" onclick="closePos(${p.id})" title="Close position">✕</button></td></tr>`).join("");
+  const ml = a.margin_level == null ? "" : `Margin level: ${a.margin_level.toFixed(2)} %`;
+  const summary = `<tr class="account-row"><td colspan="13">Balance: ${f2(a.balance)} USD &nbsp; Equity: ${f2(a.equity)} &nbsp;
+    Margin: ${f2(a.margin)} &nbsp; Free margin: ${f2(a.free_margin)} &nbsp; ${ml}</td></tr>`;
+  return `<table>${head}${body}${summary}</table>${rows.length ? "" : '<p class="muted" style="padding:8px">No open positions in this account.</p>'}`;
 }
 
-async function loadPlaybook() {
-  const p = await api("/api/playbook");
-  document.getElementById("playbook").textContent = p.current;
-  document.getElementById("lessons").innerHTML = p.lessons.map((l) => `<div class="news-item"><div>${esc(l.lesson)}</div><div class="meta">${l.day}</div></div>`).join("") || '<div class="muted">No lessons yet - the daily review writes them.</div>';
-  document.getElementById("pbversions").innerHTML = p.versions.map((v, i) =>
-    `<div class="muted">${time(v.at)} · ${v.source} ${i ? `<button class="small" onclick="rollbackPb(${v.id})">Roll back to this</button>` : "(current)"}</div>`).join("");
+async function historyTable() {
+  const rows = await api(`/api/trades?account=${acc}&limit=200`);
+  const head = `<tr><th>Time</th><th>Ticket</th><th>Type</th><th class="num">Volume</th><th>Symbol</th><th class="num">Price</th><th class="num">S / L</th>
+    <th class="num">T / P</th><th>Close time</th><th class="num">Close price</th><th class="num">Swap</th><th class="num">Profit</th><th class="num">R</th><th>Reason</th><th>AI comment</th></tr>`;
+  const digits = (s) => (state.quotes[s] ? state.quotes[s].digits : 5);
+  const body = rows.map((t) => `<tr><td>${mtTime(t.opened_at)}</td><td>${t.ticket ?? t.id}</td><td>${side(t.side)}</td><td class="num">${t.lots.toFixed(2)}</td>
+    <td><b>${state.quotes[t.symbol]?.xm || t.symbol}</b></td><td class="num">${px(t.entry, digits(t.symbol))}</td><td class="num">${px(t.stop, digits(t.symbol))}</td>
+    <td class="num">${px(t.target, digits(t.symbol))}</td><td>${mtTime(t.closed_at)}</td><td class="num">${px(t.exit, digits(t.symbol))}</td>
+    <td class="num">${f2(t.swap)}</td><td class="num ${cls(t.pnl_usd)}">${f2(t.pnl_usd)}</td><td class="num ${cls(t.pnl_r)}">${t.pnl_r == null ? "–" : t.pnl_r.toFixed(2)}</td>
+    <td>${esc(t.exit_reason)}</td><td class="wrap muted">${esc(t.signal)}: ${esc(t.ai_reason)}</td></tr>`).join("");
+  const total = rows.reduce((s, t) => s + t.pnl_usd, 0);
+  return `<table>${head}${body}<tr class="account-row"><td colspan="15">Trades: ${rows.length} &nbsp; Profit: ${f2(total)} USD</td></tr></table>`;
 }
 
+async function journalTable() {
+  const rows = await api(`/api/decisions?account=${acc}&limit=150`);
+  if (!rows.length) return '<p class="muted" style="padding:8px">No signals yet. The engine checks every closed candle of this account\'s timeframe.</p>';
+  return `<table><tr><th>Time</th><th>Symbol</th><th>Type</th><th>Signal</th><th>AI</th><th>Result</th><th>Why the signal fired</th></tr>` +
+    rows.map((r) => `<tr><td>${mtTime(r.at)}</td><td>${state.quotes[r.symbol]?.xm || r.symbol}</td><td>${side(r.side)}</td><td>${r.signal}</td>
+      <td>${r.ai_used ? "🤖" : "–"}</td><td class="wrap ${r.accepted ? "up" : "muted"}">${r.accepted ? "OPENED" + (r.reject_reason ? " · " + esc(r.reject_reason) : "") : esc(r.reject_reason)}</td>
+      <td class="wrap muted">${esc(r.signal_note)}</td></tr>`).join("") + "</table>";
+}
+
+async function scorecardTable() {
+  const s = await api(`/api/scorecard?account=${acc}`);
+  const rows = s.rows.length ? s.rows.map((r) => `<tr><td>${state.quotes[r.symbol]?.xm || r.symbol}</td><td>${r.signal}${r.disabled ? ' <span class="tag">off</span>' : ""}</td>
+    <td class="num">${r.n}</td><td class="num">${(100 * r.win_rate).toFixed(0)}%</td><td class="num ${cls(r.avg_r)}">${(r.avg_r || 0).toFixed(2)}</td>
+    <td class="num ${cls(r.pnl)}">${f2(r.pnl)}</td></tr>`).join("") : '<tr><td colspan="6" class="muted">No trades yet</td></tr>';
+  const dis = s.disabled.map((d) => `<div class="muted" style="padding:4px 8px">Auto-disabled: ${d.symbol} ${d.signal} (${esc(d.reason)})
+    <button class="small" onclick="enableSignal('${d.symbol}','${d.signal}')">Re-enable</button></div>`).join("");
+  return `<table><tr><th>Symbol</th><th>Signal</th><th class="num">Trades</th><th class="num">Win %</th><th class="num">Avg R</th><th class="num">Profit</th></tr>${rows}</table>${dis}`;
+}
+
+async function playbookView() {
+  const p = await api(`/api/playbook?mode=${acc}`);
+  const versions = p.versions.map((v, i) => `<div class="muted">${mtTime(v.at)} · ${v.source} ${i ? `<button class="small" onclick="rollbackPb(${v.id})">Roll back</button>` : "(current)"}</div>`).join("");
+  const lessons = p.lessons.map((l) => `<div style="padding:3px 0;border-bottom:1px solid var(--grid)">${esc(l.lesson)} <span class="muted">${l.day}</span></div>`).join("") || '<div class="muted">No lessons yet; the daily review writes them.</div>';
+  return `<div class="split"><div><b>${LABEL[acc]} playbook</b> <span class="muted">(Haiku reads this before every ${LABEL[acc]} trade; rewritten weekly)</span>
+    <pre class="playbook" id="pb">${esc(p.current)}</pre><button class="small" onclick="editPlaybook()">Edit</button>
+    <div style="margin-top:8px">${versions}</div></div><div><b>Recent lessons</b>${lessons}</div></div>`;
+}
+
+function aiView() {
+  const b = state.budget;
+  const used = Math.min(100, 100 * b.month_spend / Math.max(b.monthly_budget, 0.0001));
+  return `<div style="padding:8px"><div>AI spend this month: <b>${usd(b.month_spend)}</b> of ${usd(b.monthly_budget)} (${b.model})</div>
+    <div style="height:6px;background:var(--panel-2);margin:6px 0;max-width:400px"><div style="height:100%;width:${used}%;background:${used > 80 ? "var(--warn)" : "var(--accent)"}"></div></div>
+    <div class="muted">Calls today: ${b.calls_today} / ${b.max_calls_per_day} ${b.blocked ? `· <span class="warn">blocked: ${esc(b.blocked)}</span>` : ""}</div>
+    <table style="margin-top:8px;max-width:600px"><tr><th>Purpose</th><th class="num">Calls</th><th class="num">Tokens in</th><th class="num">Tokens out</th><th class="num">Cost</th></tr>
+    ${b.by_purpose.map((p) => `<tr><td>${p.purpose}</td><td class="num">${p.calls}</td><td class="num">${p.tin}</td><td class="num">${p.tout}</td><td class="num">$${(p.cost || 0).toFixed(4)}</td></tr>`).join("")}</table></div>`;
+}
+
+function controlsView() {
+  const a = state.account;
+  return `<div style="padding:8px"><p><b>${esc(a.label)}</b>: status <b>${a.status}</b> ${esc(a.status_reason || "")}</p>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <button onclick="control('pause')">⏸ Pause</button><button onclick="control('resume')">▶ Resume</button>
+      <button onclick="control('close_all','Close ALL open positions in this account?')">Close all</button>
+      <button class="danger" onclick="control('kill','KILL SWITCH: close everything in this account and halt it?')">🛑 Kill switch</button>
+      <button class="danger" onclick="control('reset_account','RESET this account to $250? Its trades, journal and equity history are deleted.')">↺ Reset account to $250</button>
+    </div>
+    <p class="muted">Rules for this account (risk, lots, targets, timeframe) are on the <a href="/settings#${acc}">Settings</a> page.</p></div>`;
+}
+
+// -------------------------------------------------------------- actions
+async function control(action, confirmMsg) {
+  if (confirmMsg && !confirm(confirmMsg)) return;
+  try { const r = await api(`/api/control/${action}?account=${acc}`, { method: "POST", body: {} }); toast(`${action}: ${JSON.stringify(r)}`); await loadState(); renderTab(); }
+  catch (e) { toast("Error: " + e.message); }
+}
+async function closePos(id) {
+  if (!confirm(`Close #${id} at market?`)) return;
+  await api(`/api/control/close_position?account=${acc}`, { method: "POST", body: { id } }); await loadState(); renderTab();
+}
+async function enableSignal(symbol, signal) { await api("/api/scorecard/enable", { method: "POST", body: { account: acc, symbol, signal } }); renderTab(); }
 async function editPlaybook() {
-  const cur = document.getElementById("playbook").textContent;
-  const text = prompt("Edit playbook (rules the AI reads before every trade):", cur);
-  if (text && text !== cur) { await api("/api/playbook", { method: "PUT", body: { content: text } }); loadPlaybook(); toast("Playbook saved"); }
+  const cur = document.getElementById("pb").textContent;
+  const text = prompt(`Edit the ${LABEL[acc]} playbook:`, cur);
+  if (text && text !== cur) { await api("/api/playbook", { method: "PUT", body: { mode: acc, content: text } }); renderTab(); toast("Playbook saved"); }
 }
-async function rollbackPb(id) { if (confirm("Roll back playbook?")) { await api(`/api/playbook/rollback/${id}`, { method: "POST" }); loadPlaybook(); } }
+async function rollbackPb(id) { if (confirm("Roll back playbook?")) { await api(`/api/playbook/rollback/${id}`, { method: "POST" }); renderTab(); } }
 
-function liveStream() {
-  const es = new EventSource("/api/stream");
+// ----------------------------------------------------------- data loading
+async function loadState() {
+  state = await api(`/api/state?account=${acc}`);
+  document.getElementById("warnings").innerHTML = state.config_warnings.map((w) => `<div class="alert">⚠ ${esc(w)}</div>`).join("");
+  renderTabs(state.accounts); renderMW(state.quotes); renderStatus(state.account);
+  document.getElementById("mw-time").textContent = state.session;
+}
+
+function connectStream() {
+  if (es) es.close();
+  if (acc === "compare") return;
+  es = new EventSource(`/api/stream?account=${acc}`);
   es.onmessage = (e) => {
     const d = JSON.parse(e.data);
-    renderQuotes(d.quotes); renderStats(d.account);
+    if (!state) return;
+    state.quotes = d.quotes; state.account = d.account; state.accounts = d.accounts;
+    renderMW(d.quotes); renderTabs(d.accounts); renderStatus(d.account); tickChart(d.quotes[sym]);
+    let changed = d.positions.length !== state.positions.length;
     d.positions.forEach((p) => {
-      const px = document.getElementById(`pos-px-${p.id}`), u = document.getElementById(`pos-u-${p.id}`);
-      if (px && state) { const pos = state.positions.find((x) => x.id === p.id); px.textContent = fmtPx(p.price, pos ? pos.decimals : 5); }
-      if (u) { u.textContent = usd(p.unrealized, true); u.className = cls(p.unrealized); }
+      const old = state.positions.find((x) => x.id === p.id);
+      if (!old) { changed = true; return; }
+      if (old.stop !== p.stop) changed = true;
+      Object.assign(old, p);
+      const pxEl = document.getElementById(`px-${p.id}`), pf = document.getElementById(`pf-${p.id}`);
+      if (pxEl) pxEl.textContent = px(p.price, old.digits);
+      if (pf) { pf.textContent = f2(p.profit); pf.className = "num " + cls(p.profit); }
     });
-    if (state && d.positions.length !== state.positions.length) { loadState(); loadTrades(); }
+    if (changed) loadState().then(() => { drawPositionLines(); if (tab === "trade" || tab === "history") renderTab(); });
   };
-  es.onerror = () => { es.close(); setTimeout(liveStream, 5000); };
+  es.onerror = () => { es.close(); setTimeout(connectStream, 5000); };
 }
 
-loadState(); loadEquity(); loadTrades(); loadDecisions(); loadScorecard(); loadPlaybook(); liveStream();
-setInterval(() => { loadState(); loadDecisions(); }, 30000);
-setInterval(() => { loadEquity(); loadTrades(); loadScorecard(); }, 120000);
+// --------------------------------------------------------------- compare
+async function loadCompare() {
+  if (es) es.close();
+  const [rows, eq] = await Promise.all([api("/api/compare"), api("/api/equity?days=120")]);
+  renderTabs(Object.fromEntries(rows.map((r) => [r.id, r])));
+  document.getElementById("cmp-cards").innerHTML = rows.map((r) => `<div class="card">
+    <h3>${esc(r.label)} <span class="muted">${r.timeframe === "5m" ? "M5" : "M15"} · ${r.status}</span></h3>
+    <div class="big ${cls(r.pnl_total)}">${f2(r.equity)} <span style="font-size:13px">(${pct(100 * r.pnl_total / r.starting_balance)})</span></div>
+    <div class="kv"><span>Trades</span><span>${r.trades}</span><span>Win rate</span><span>${r.win_rate == null ? "–" : (100 * r.win_rate).toFixed(0) + "%"}</span>
+    <span>Avg R</span><span class="${cls(r.avg_r)}">${r.avg_r == null ? "–" : r.avg_r.toFixed(2)}</span>
+    <span>Avg per day</span><span class="${cls(r.avg_daily_pct)}">${r.avg_daily_pct == null ? "–" : r.avg_daily_pct.toFixed(2) + "%"}</span>
+    <span>Max drawdown</span><span>${r.max_drawdown_pct.toFixed(1)}%</span><span>Best / worst trade</span><span>${f2(r.best)} / ${f2(r.worst)}</span>
+    <span>Days running</span><span>${r.days.toFixed(1)}</span></div></div>`).join("");
+  const el = document.getElementById("cmp-chart");
+  if (cmpChart) cmpChart.remove();
+  cmpChart = LightweightCharts.createChart(el, { layout: { background: { color: "#0b0e13" }, textColor: "#9aa3b2" },
+    grid: { vertLines: { color: "#161b24" }, horzLines: { color: "#161b24" } }, timeScale: { timeVisible: true }, autoSize: true });
+  const colors = { standard: "#2f7cf6", moderate: "#a970ff", aggressive: "#ff8f3a" };
+  const t = (iso) => Math.floor(new Date(iso).getTime() / 1000);
+  for (const m of ["standard", "moderate", "aggressive"]) {
+    const s = cmpChart.addLineSeries({ color: colors[m], lineWidth: 2, title: LABEL[m] });
+    s.setData(eq.filter((r) => r.account === m).map((r) => ({ time: t(r.at), value: r.equity })));
+  }
+  const base = eq.filter((r) => r.account === "standard");
+  const b1 = cmpChart.addLineSeries({ color: "#d29922", lineWidth: 1, lineStyle: 2, title: "BTC hold" });
+  b1.setData(base.filter((r) => r.btc_benchmark).map((r) => ({ time: t(r.at), value: r.btc_benchmark })));
+  const b2 = cmpChart.addLineSeries({ color: "#c9a227", lineWidth: 1, lineStyle: 1, title: "Gold hold" });
+  b2.setData(base.filter((r) => r.gold_benchmark).map((r) => ({ time: t(r.at), value: r.gold_benchmark })));
+  cmpChart.timeScale().fitContent();
+}
+
+// ------------------------------------------------------------------ start
+makeChart();
+selectAccount(["standard", "moderate", "aggressive", "compare"].includes(acc) ? acc : "standard");
+setInterval(() => { if (acc !== "compare") { loadState(); if (["journal", "scorecard", "ai"].includes(tab)) renderTab(); } }, 30000);
+setInterval(() => { if (acc !== "compare" && state) loadChart(); }, 5 * 60000);
+setInterval(() => { if (acc === "compare") loadCompare(); }, 60000);
 </script>
 </body>
 </html>

@@ -12,34 +12,39 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+SCHEMA_VERSION = 2   # bump when tables change; older DB files are backed up and recreated
+
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS account (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    cash REAL NOT NULL,
+CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,                        -- standard | moderate | aggressive
+    cash REAL NOT NULL,                         -- MT5 "Balance"
     equity REAL NOT NULL,
     peak REAL NOT NULL,
     starting_balance REAL NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active',      -- active | paused | paused_daily | paused_weekly | halted
+    status TEXT NOT NULL DEFAULT 'active',      -- active | paused | paused_daily | paused_weekly | target_hit | halted
     status_reason TEXT,
-    paused_until TEXT,
     started_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS prices (
     symbol TEXT NOT NULL,
-    t INTEGER NOT NULL,                         -- candle open time, epoch seconds (15m)
+    tf TEXT NOT NULL,                           -- 5m | 15m
+    t INTEGER NOT NULL,                         -- candle open time, epoch seconds
     o REAL, h REAL, l REAL, c REAL, v REAL,
-    PRIMARY KEY (symbol, t)
+    PRIMARY KEY (symbol, tf, t)
 );
 
 CREATE TABLE IF NOT EXISTS positions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,       -- MT5 "Ticket"
+    account TEXT NOT NULL,
     symbol TEXT NOT NULL,
     side TEXT NOT NULL,                         -- LONG | SHORT
-    units REAL NOT NULL,
-    leverage REAL NOT NULL,
+    lots REAL NOT NULL,                         -- MT5 "Volume"
+    units REAL NOT NULL,                        -- lots x contract size
+    leverage REAL NOT NULL,                     -- effective leverage at entry (notional / equity)
     entry REAL NOT NULL,
     stop REAL NOT NULL,
+    initial_stop REAL NOT NULL,
     target REAL NOT NULL,
     margin REAL NOT NULL,
     risk_usd REAL NOT NULL,
@@ -55,14 +60,17 @@ CREATE TABLE IF NOT EXISTS positions (
 
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account TEXT NOT NULL,
+    ticket INTEGER,
     symbol TEXT NOT NULL,
     side TEXT NOT NULL,
+    lots REAL NOT NULL,
     units REAL NOT NULL,
     leverage REAL NOT NULL,
     entry REAL NOT NULL,
     exit REAL NOT NULL,
     stop REAL, target REAL,
-    pnl_usd REAL NOT NULL,                      -- net of fees, swap and funding
+    pnl_usd REAL NOT NULL,                      -- net of commission and swap
     pnl_r REAL,
     fees REAL NOT NULL DEFAULT 0,
     swap REAL NOT NULL DEFAULT 0,
@@ -77,6 +85,7 @@ CREATE TABLE IF NOT EXISTS trades (
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
+    account TEXT NOT NULL,
     symbol TEXT NOT NULL,
     signal TEXT NOT NULL,
     side TEXT NOT NULL,
@@ -90,7 +99,7 @@ CREATE TABLE IF NOT EXISTS decisions (
 CREATE TABLE IF NOT EXISTS cost_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
-    purpose TEXT NOT NULL,                      -- gate | news_digest | daily_review | weekly_playbook
+    purpose TEXT NOT NULL,                      -- gate:<mode> | news_digest | daily_review:<mode> | weekly_playbook:<mode>
     model TEXT NOT NULL,
     input_tokens INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL,
@@ -100,16 +109,19 @@ CREATE TABLE IF NOT EXISTS cost_log (
 );
 
 CREATE TABLE IF NOT EXISTS equity_snapshots (
-    at TEXT PRIMARY KEY,
+    at TEXT NOT NULL,
+    account TEXT NOT NULL,
     equity REAL NOT NULL,
     cash REAL NOT NULL,
     margin_used REAL NOT NULL,
     btc_benchmark REAL,
-    gold_benchmark REAL
+    gold_benchmark REAL,
+    PRIMARY KEY (at, account)
 );
 
 CREATE TABLE IF NOT EXISTS playbook_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL,
     at TEXT NOT NULL,
     content TEXT NOT NULL,
     source TEXT NOT NULL                        -- seed | weekly_ai | manual | rollback
@@ -117,6 +129,7 @@ CREATE TABLE IF NOT EXISTS playbook_versions (
 
 CREATE TABLE IF NOT EXISTS lessons (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode TEXT NOT NULL,
     at TEXT NOT NULL,
     day TEXT NOT NULL,
     lesson TEXT NOT NULL
@@ -125,16 +138,17 @@ CREATE TABLE IF NOT EXISTS lessons (
 CREATE TABLE IF NOT EXISTS settings_versions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
-    source TEXT NOT NULL,                       -- default | ui | preset:<name> | revert
+    source TEXT NOT NULL,                       -- default | ui | reset:<mode> | revert
     data TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS disabled_signals (
+    account TEXT NOT NULL,
     symbol TEXT NOT NULL,
     signal TEXT NOT NULL,
     at TEXT NOT NULL,
     reason TEXT,
-    PRIMARY KEY (symbol, signal)
+    PRIMARY KEY (account, symbol, signal)
 );
 
 CREATE TABLE IF NOT EXISTS news_items (
@@ -159,7 +173,7 @@ CREATE TABLE IF NOT EXISTS calendar_events (
 CREATE TABLE IF NOT EXISTS news_digests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at TEXT NOT NULL,
-    data TEXT NOT NULL                          -- JSON: {symbol: {bias, risk, summary}}, market_summary
+    data TEXT NOT NULL                          -- JSON: {instruments: {symbol: {bias, risk, summary}}, market_summary}
 );
 
 CREATE TABLE IF NOT EXISTS kv (
@@ -167,7 +181,8 @@ CREATE TABLE IF NOT EXISTS kv (
     v TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_trades_closed ON trades(closed_at);
+CREATE INDEX IF NOT EXISTS idx_pos_account ON positions(account);
+CREATE INDEX IF NOT EXISTS idx_trades_closed ON trades(account, closed_at);
 CREATE INDEX IF NOT EXISTS idx_decisions_at ON decisions(at);
 CREATE INDEX IF NOT EXISTS idx_cost_at ON cost_log(at);
 CREATE INDEX IF NOT EXISTS idx_news_at ON news_items(at);
@@ -191,15 +206,36 @@ def parse_iso(s: str) -> datetime:
 class DB:
     def __init__(self, path: Path | str):
         self.path = str(path)
+        self.migrated_from: str | None = None
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+            self._backup_if_old_schema()
         self._lock = threading.RLock()
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.conn.commit()
+
+    def _backup_if_old_schema(self) -> None:
+        """A DB file from an older version is moved aside (kept, not deleted) and a fresh one created."""
+        p = Path(self.path)
+        if not p.exists():
+            return
+        conn = sqlite3.connect(self.path)
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        has_tables = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table'").fetchone()[0]
+        conn.close()
+        if version >= SCHEMA_VERSION or not has_tables:
+            return
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        for suffix in ("", "-wal", "-shm"):
+            f = Path(self.path + suffix)
+            if f.exists():
+                f.rename(f"{self.path}.v{version}-{stamp}.bak{suffix}")
+        self.migrated_from = f"{self.path}.v{version}-{stamp}.bak"
 
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -242,10 +278,19 @@ class DB:
                 self.conn.backup(target)
             target.close()
 
-    def ensure_account(self, starting_balance: float) -> None:
-        if not self.one("SELECT id FROM account WHERE id=1"):
-            self.execute(
-                "INSERT INTO account(id, cash, equity, peak, starting_balance, status, started_at) "
-                "VALUES (1, ?, ?, ?, ?, 'active', ?)",
-                (starting_balance, starting_balance, starting_balance, starting_balance, iso()),
-            )
+    def ensure_accounts(self, ids: list[str], starting_balance: float) -> None:
+        for acc in ids:
+            if not self.one("SELECT id FROM accounts WHERE id=?", (acc,)):
+                self.execute(
+                    "INSERT INTO accounts(id, cash, equity, peak, starting_balance, status, started_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'active', ?)",
+                    (acc, starting_balance, starting_balance, starting_balance, starting_balance, iso()),
+                )
+
+    def reset_account(self, acc: str, starting_balance: float) -> None:
+        """Wipe one paper account back to its starting balance (history of that account removed)."""
+        for table in ("positions", "trades", "decisions", "equity_snapshots", "disabled_signals"):
+            self.execute(f"DELETE FROM {table} WHERE account=?", (acc,))
+        self.execute("DELETE FROM accounts WHERE id=?", (acc,))
+        self.execute("DELETE FROM kv WHERE k LIKE ?", (f"%:{acc}",))
+        self.ensure_accounts([acc], starting_balance)

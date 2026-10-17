@@ -1,7 +1,7 @@
 """Entry point: `uvicorn app.main:app` (or `python -m app.main`).
 
-One process runs everything: price feeds, engine loops, scheduled jobs,
-the dashboard/settings web pages and the JSON API behind them.
+One process runs everything: price feeds, the engine (3 paper accounts),
+scheduled jobs, the MT5-style dashboard / settings / news pages and the JSON API.
 """
 from __future__ import annotations
 
@@ -25,17 +25,19 @@ from .ai.client import AIClient
 from .ai.review import current_playbook, daily_review, weekly_playbook
 from .alerts import telegram
 from .config import ENV
-from .db import DB, iso
+from .db import DB, iso, parse_iso
 from .engine import Engine
 from .feeds import build_feeds
-from .feeds.prices import PriceCache, prune_candles
+from .feeds.prices import PriceCache, load_candles, prune_candles
 from .instruments import INSTRUMENTS
 from .news.digest import latest_digest, run_digest
 from .news.sources import events_between, recent_headlines, refresh_calendar, refresh_headlines
 from .sessions import market_open, session_name
-from .settings_store import PRESETS, SettingsStore
+from .settings_store import MODE_LABELS, MODES, SettingsStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+for noisy in ("httpx", "httpx2", "apscheduler.executors.default", "apscheduler.scheduler"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 log = logging.getLogger("main")
 STATIC = Path(__file__).parent / "static"
 
@@ -43,7 +45,9 @@ if not ENV.paper_only:
     raise SystemExit("PAPER_ONLY must be true. This app has no live-trading code; refusing to start.")
 
 db = DB(ENV.db_path)
-db.ensure_account(ENV.starting_balance)
+if db.migrated_from:
+    log.warning("Old database moved to %s - starting fresh 3-account database", db.migrated_from)
+db.ensure_accounts(MODES, ENV.starting_balance)
 store = SettingsStore(db)
 prices = PriceCache()
 feeds = build_feeds(prices)
@@ -52,19 +56,18 @@ engine = Engine(db, store, prices, feeds, ai, telegram)
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 
+def _acc(account: str | None) -> str:
+    account = account or "standard"
+    if account not in MODES:
+        raise HTTPException(404, f"Unknown account {account}")
+    return account
+
+
 # ============================================================ scheduled jobs
 async def job_swap() -> None:
     total = engine.broker.apply_swap(store.current, datetime.now(timezone.utc))
     if total:
         log.info("Swap applied: %.4f", total)
-
-
-async def job_funding() -> None:
-    res = await feeds["binance"].fetch_funding()
-    if res:
-        total = engine.broker.apply_funding(res[0])
-        if total:
-            log.info("Funding applied at rate %.6f: %.4f", res[0], total)
 
 
 async def job_calendar() -> None:
@@ -98,25 +101,28 @@ async def job_news() -> None:
 
 
 async def job_daily() -> None:
-    cfg = store.current
     y = datetime.now(timezone.utc) - timedelta(days=1)
     d0, d1 = y.strftime("%Y-%m-%d"), datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    row = db.one("SELECT COUNT(*) n, COALESCE(SUM(pnl_usd),0) pnl FROM trades WHERE closed_at >= ? AND closed_at < ?",
-                 (d0, d1))
-    msg = [f"📊 <b>Daily summary {d0}</b>", engine.status_text(),
-           f"Trades closed: {row['n']} · P&L ${row['pnl']:+.2f}"]
-    switched = scorecard.auto_disable(db, cfg)
-    if switched:
-        msg.append("Auto-disabled (negative expectancy): " + ", ".join(switched))
+    msg = [f"📊 <b>Daily summary {d0}</b>", engine.status_text()]
+    for m in MODES:
+        cfg = store.cfg(m)
+        row = db.one("SELECT COUNT(*) n, COALESCE(SUM(pnl_usd),0) pnl FROM trades "
+                     "WHERE account=? AND closed_at >= ? AND closed_at < ?", (m, d0, d1))
+        msg.append(f"{MODE_LABELS[m]}: {row['n']} trades, P&L ${row['pnl']:+.2f}")
+        switched = scorecard.auto_disable(db, m, cfg)
+        if switched:
+            msg.append(f"  auto-disabled: {', '.join(switched)}")
     await telegram.send("\n".join(msg))
-    if cfg["ai"]["daily_review"]:
-        await telegram.send(await daily_review(ai, db, cfg, y))
+    if store.current["ai"]["daily_review"]:
+        for m in store.active_modes():
+            await telegram.send(await daily_review(ai, db, store.cfg(m), m, y))
     prune_candles(db)
 
 
 async def job_weekly() -> None:
     if store.current["ai"]["weekly_playbook"]:
-        await telegram.send(await weekly_playbook(ai, db, store.current, scorecard.as_text(db)))
+        for m in store.active_modes():
+            await telegram.send(await weekly_playbook(ai, db, store.cfg(m), m, scorecard.as_text(db, m)))
 
 
 async def job_backup() -> None:
@@ -131,9 +137,8 @@ async def job_backup() -> None:
 
 
 def schedule_jobs() -> None:
-    ny = "America/New_York"
-    scheduler.add_job(job_swap, CronTrigger(day_of_week="mon-fri", hour=17, minute=0, timezone=ny))
-    scheduler.add_job(job_funding, CronTrigger(hour="7,15,23", minute=59, second=45))
+    # XM rollover ~ 17:00 New York; every day (BTCUSD swaps weekends too; FX/gold skipped inside)
+    scheduler.add_job(job_swap, CronTrigger(hour=17, minute=0, timezone="America/New_York"))
     scheduler.add_job(job_calendar, IntervalTrigger(hours=1), next_run_time=datetime.now(timezone.utc))
     scheduler.add_job(job_news, IntervalTrigger(minutes=1), next_run_time=datetime.now(timezone.utc) + timedelta(seconds=20))
     scheduler.add_job(job_daily, CronTrigger(hour=0, minute=5))
@@ -151,24 +156,27 @@ async def _tg_status() -> str:
 
 @telegram.command("pause")
 async def _tg_pause() -> str:
-    engine.pause()
-    return "⏸ Paused. Open positions keep their stops."
+    for m in MODES:
+        engine.pause(m)
+    return "⏸ All accounts paused. Open positions keep their stops."
 
 
 @telegram.command("resume")
 async def _tg_resume() -> str:
-    engine.resume()
-    return "▶️ Resumed."
+    for m in MODES:
+        engine.resume(m)
+    return "▶️ All accounts resumed."
 
 
 @telegram.command("closeall")
 async def _tg_closeall() -> str:
-    return f"Closed {await engine.close_all()} positions."
+    n = sum([await engine.close_all(m) for m in MODES])
+    return f"Closed {n} positions."
 
 
 @telegram.command("help")
 async def _tg_help() -> str:
-    return "Commands: /status /pause /resume /closeall"
+    return "Commands: /status /pause /resume /closeall (all 3 accounts)"
 
 
 # ===================================================================== app
@@ -180,7 +188,7 @@ async def lifespan(_: FastAPI):
     tasks += [asyncio.create_task(engine.fast_loop()), asyncio.create_task(engine.minute_loop())]
     schedule_jobs()
     scheduler.start()
-    await telegram.send("🤖 Paper trader started.")
+    await telegram.send("🤖 Paper trader started (3 accounts: Standard, Moderate, Aggressive).")
     yield
     scheduler.shutdown(wait=False)
     for t in tasks:
@@ -224,52 +232,62 @@ def static(name: str, _: str = Depends(auth)):
 
 
 # ------------------------------------------------------------------- state
-def _quotes() -> dict:
+def _quotes(account: str) -> dict:
     now = datetime.now(timezone.utc)
+    cfg = store.cfg(account)
+    st = engine.broker.state(cfg, account)
     out = {}
     for sym, inst in INSTRUMENTS.items():
         q = prices.get(sym)
+        bid = ask = None
+        if q:
+            bid, ask = engine.broker.broker_quote(cfg, inst, q)
         out[sym] = {
-            "display": inst.display, "decimals": inst.decimals, "source": inst.source,
-            "bid": q.bid if q else None, "ask": q.ask if q else None,
-            "mid": q.mid if q else None, "mark": q.mark if q else None,
+            "xm": inst.xm, "display": inst.display, "digits": inst.digits, "source": inst.source,
+            "bid": bid, "ask": ask, "spread": round((ask - bid) / inst.point) if q else None,
             "age": prices.age_seconds(sym), "open": market_open(inst, now),
             "enabled": store.current["instruments"].get(sym, False),
-            "last_check": engine.last_filter_reason.get(sym),
+            "last_check": engine.last_check.get((account, sym)),
+            "min_lot_risk": engine.min_lot_risk(account, sym, st.equity),
+            "contract": inst.contract_size,
         }
     return out
 
 
-def _account() -> dict:
-    cfg = store.current
-    st = engine.broker.state(cfg)
-    day0 = db.kv_get("day_start_equity", st.equity)
-    acc = db.one("SELECT started_at FROM account WHERE id=1")
+def _account(account: str) -> dict:
+    cfg = store.cfg(account)
+    st = engine.broker.state(cfg, account)
+    day0 = db.kv_get(f"day_start_equity:{account}", st.equity)
+    acc = db.one("SELECT started_at FROM accounts WHERE id=?", (account,))
     return {
-        "equity": st.equity, "cash": st.cash, "peak": st.peak, "unrealized": st.unrealized,
+        "id": account, "label": MODE_LABELS[account], "timeframe": cfg["timeframe"],
+        "enabled": store.current["modes"][account]["enabled"],
+        "balance": st.cash, "equity": st.equity, "peak": st.peak, "profit": st.unrealized,
+        "margin": st.margin_used, "free_margin": st.free_margin, "margin_level": st.margin_level_pct,
         "starting_balance": st.starting_balance, "pnl_total": st.equity - st.starting_balance,
-        "pnl_today": st.equity - day0, "margin_used": st.margin_used,
-        "margin_used_pct": st.margin_used_pct, "margin_level_pct": st.margin_level_pct,
+        "pnl_today": st.equity - day0, "margin_used_pct": st.margin_used_pct,
         "status": st.status, "status_reason": st.status_reason, "started_at": acc["started_at"],
         "drawdown_pct": 100 * (st.peak - st.equity) / st.peak if st.peak else 0,
-        "profile": cfg["profile"], "trading_mode": cfg["trading_mode"],
+        "trading_mode": cfg["trading_mode"],
     }
 
 
-def _positions() -> list[dict]:
-    cfg = store.current
+def _positions(account: str | None) -> list[dict]:
     out = []
-    for p in engine.broker.positions():
+    for p in engine.broker.positions(account):
+        cfg = store.cfg(p["account"])
         q = prices.get(p["symbol"])
-        p["price"] = q.mid if q else None
-        p["unrealized"] = engine.broker.unrealized(cfg, p)
-        p["decimals"] = INSTRUMENTS[p["symbol"]].decimals
+        inst = INSTRUMENTS[p["symbol"]]
+        p["price"] = engine.broker.exit_price(cfg, inst, p["side"], q) if q else None
+        p["profit"] = engine.broker.unrealized(cfg, p)
+        p["digits"] = inst.digits
+        p["xm"] = inst.xm
         out.append(p)
     return out
 
 
 def _budget() -> dict:
-    cfg = store.current
+    cfg = store.cfg("standard")
     month = datetime.now(timezone.utc).strftime("%Y-%m")
     by_purpose = db.all("SELECT purpose, COUNT(*) calls, SUM(input_tokens) tin, SUM(output_tokens) tout, "
                         "SUM(cost_usd) cost FROM cost_log WHERE at >= ? GROUP BY purpose", (month,))
@@ -279,32 +297,42 @@ def _budget() -> dict:
 
 
 @app.get("/api/state")
-def api_state(_: str = Depends(auth)) -> dict:
+def api_state(account: str = "standard", _: str = Depends(auth)) -> dict:
+    account = _acc(account)
     return {
         "now": iso(), "session": session_name(datetime.now(timezone.utc)),
-        "account": _account(), "positions": _positions(), "quotes": _quotes(),
-        "budget": _budget(),
+        "account": _account(account), "accounts": {m: _account(m) for m in MODES},
+        "positions": _positions(account), "quotes": _quotes(account), "budget": _budget(),
         "feeds": {k: {"connected": v.connected, "last_message": iso(v.last_message) if v.last_message else None,
                       "last_error": v.last_error, "reconnects": v.reconnects} for k, v in prices.status.items()},
-        "funding_rate": prices.funding_rate,
         "config_warnings": [w for w in [
-            None if ENV.has_ai else "ANTHROPIC_API_KEY missing - AI gate off (rules only / skip per settings)",
-            None if ENV.has_telegram else "Telegram not configured - alerts only go to the log",
+            None if ENV.has_ai else "ANTHROPIC_API_KEY missing - AI gate off (rules only / skip per mode)",
         ] if w],
     }
 
 
 @app.get("/api/stream")
-async def api_stream(request: Request, _: str = Depends(auth)):
-    """Server-sent events: live quotes + equity every second."""
+async def api_stream(request: Request, account: str = "standard", _: str = Depends(auth)):
+    """Server-sent events: live quotes, account and position P&L every second."""
+    account = _acc(account)
+
     async def gen():
         while not await request.is_disconnected():
-            acc = _account()
-            pos = [{"id": p["id"], "price": p["price"], "unrealized": p["unrealized"]} for p in _positions()]
-            yield f"data: {json.dumps({'quotes': _quotes(), 'account': acc, 'positions': pos})}\n\n"
+            pos = [{"id": p["id"], "price": p["price"], "profit": p["profit"], "stop": p["stop"]}
+                   for p in _positions(account)]
+            payload = {"quotes": _quotes(account), "account": _account(account),
+                       "accounts": {m: _account(m) for m in MODES}, "positions": pos}
+            yield f"data: {json.dumps(payload)}\n\n"
             await asyncio.sleep(1)
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/candles")
+def api_candles(symbol: str, tf: str = "15m", n: int = 300, _: str = Depends(auth)) -> list[dict]:
+    if symbol not in INSTRUMENTS or tf not in ("5m", "15m"):
+        raise HTTPException(404)
+    return load_candles(db, symbol, min(n, 2000), tf)
 
 
 @app.get("/api/equity")
@@ -313,50 +341,78 @@ def api_equity(days: int = 90, _: str = Depends(auth)) -> list[dict]:
     return db.all("SELECT * FROM equity_snapshots WHERE at >= ? ORDER BY at", (since,))
 
 
+@app.get("/api/compare")
+def api_compare(_: str = Depends(auth)) -> list[dict]:
+    out = []
+    for m in MODES:
+        a = _account(m)
+        s = scorecard.summary(db, m)
+        snaps = db.all("SELECT equity FROM equity_snapshots WHERE account=? ORDER BY at", (m,))
+        peak, max_dd = 0.0, 0.0
+        for r in snaps:
+            peak = max(peak, r["equity"])
+            max_dd = max(max_dd, (peak - r["equity"]) / peak if peak else 0)
+        days = max(1.0, (datetime.now(timezone.utc) - parse_iso(a["started_at"])).total_seconds() / 86400)
+        out.append({**a, **s, "max_drawdown_pct": 100 * max_dd, "days": days,
+                    "avg_daily_pct": 100 * ((a["equity"] / a["starting_balance"]) ** (1 / days) - 1)
+                    if a["equity"] > 0 else None})
+    return out
+
+
 @app.get("/api/trades")
-def api_trades(limit: int = 100, _: str = Depends(auth)) -> list[dict]:
+def api_trades(account: str | None = None, limit: int = 200, _: str = Depends(auth)) -> list[dict]:
+    if account:
+        return db.all("SELECT * FROM trades WHERE account=? ORDER BY id DESC LIMIT ?", (_acc(account), limit))
     return db.all("SELECT * FROM trades ORDER BY id DESC LIMIT ?", (limit,))
 
 
 @app.get("/api/decisions")
-def api_decisions(limit: int = 100, _: str = Depends(auth)) -> list[dict]:
+def api_decisions(account: str | None = None, limit: int = 150, _: str = Depends(auth)) -> list[dict]:
+    if account:
+        return db.all("SELECT * FROM decisions WHERE account=? ORDER BY id DESC LIMIT ?", (_acc(account), limit))
     return db.all("SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (limit,))
 
 
 @app.get("/api/scorecard")
-def api_scorecard(_: str = Depends(auth)) -> dict:
-    return {"rows": scorecard.compute(db),
-            "disabled": db.all("SELECT * FROM disabled_signals ORDER BY at DESC")}
+def api_scorecard(account: str = "standard", _: str = Depends(auth)) -> dict:
+    account = _acc(account)
+    return {"rows": scorecard.compute(db, account),
+            "disabled": db.all("SELECT * FROM disabled_signals WHERE account=? ORDER BY at DESC", (account,))}
 
 
 @app.post("/api/scorecard/enable")
 def api_enable_signal(body: dict, _: str = Depends(auth)) -> dict:
-    scorecard.enable(db, body["symbol"], body["signal"])
+    scorecard.enable(db, _acc(body.get("account")), body["symbol"], body["signal"])
     return {"ok": True}
 
 
 @app.get("/api/playbook")
-def api_playbook(_: str = Depends(auth)) -> dict:
-    return {"current": current_playbook(db),
-            "versions": db.all("SELECT id, at, source FROM playbook_versions ORDER BY id DESC LIMIT 20"),
-            "lessons": db.all("SELECT * FROM lessons ORDER BY id DESC LIMIT 30")}
+def api_playbook(mode: str = "standard", _: str = Depends(auth)) -> dict:
+    mode = _acc(mode)
+    return {"current": current_playbook(db, mode),
+            "versions": db.all("SELECT id, at, source FROM playbook_versions WHERE mode=? ORDER BY id DESC LIMIT 20",
+                               (mode,)),
+            "lessons": db.all("SELECT * FROM lessons WHERE mode=? ORDER BY id DESC LIMIT 30", (mode,))}
 
 
 @app.put("/api/playbook")
 def api_playbook_edit(body: dict, _: str = Depends(auth)) -> dict:
+    mode = _acc(body.get("mode"))
     text = str(body.get("content", "")).strip()[:4000]
     if not text:
         raise HTTPException(400, "Playbook can't be empty")
-    db.execute("INSERT INTO playbook_versions(at, content, source) VALUES (?,?,?)", (iso(), text, "manual"))
+    db.execute("INSERT INTO playbook_versions(mode, at, content, source) VALUES (?,?,?,?)",
+               (mode, iso(), text, "manual"))
     return {"ok": True}
 
 
 @app.post("/api/playbook/rollback/{vid}")
 def api_playbook_rollback(vid: int, _: str = Depends(auth)) -> dict:
-    row = db.one("SELECT content FROM playbook_versions WHERE id=?", (vid,))
+    row = db.one("SELECT mode, content FROM playbook_versions WHERE id=?", (vid,))
     if not row:
         raise HTTPException(404)
-    db.execute("INSERT INTO playbook_versions(at, content, source) VALUES (?,?,?)", (iso(), row["content"], "rollback"))
+    db.execute("INSERT INTO playbook_versions(mode, at, content, source) VALUES (?,?,?,?)",
+               (row["mode"], iso(), row["content"], "rollback"))
     return {"ok": True}
 
 
@@ -381,8 +437,7 @@ async def api_news_digest(_: str = Depends(auth)) -> dict:
 # ---------------------------------------------------------------- settings
 @app.get("/api/settings")
 def api_settings(_: str = Depends(auth)) -> dict:
-    return {"current": store.current, "schema": store.schema(), "presets": list(PRESETS),
-            "history": store.history()}
+    return {"current": store.current, "schema": store.schema(), "history": store.history()}
 
 
 @app.put("/api/settings")
@@ -393,10 +448,10 @@ def api_settings_save(body: dict, _: str = Depends(auth)) -> dict:
         raise HTTPException(400, str(e)) from e
 
 
-@app.post("/api/settings/preset/{name}")
-def api_settings_preset(name: str, _: str = Depends(auth)) -> dict:
+@app.post("/api/settings/reset/{mode}")
+def api_settings_reset(mode: str, _: str = Depends(auth)) -> dict:
     try:
-        return {"current": store.apply_preset(name)}
+        return {"current": store.reset_mode(mode)}
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
@@ -409,28 +464,25 @@ def api_settings_revert(vid: int, _: str = Depends(auth)) -> dict:
         raise HTTPException(404, str(e)) from e
 
 
-@app.get("/api/settings/version/{vid}")
-def api_settings_version(vid: int, _: str = Depends(auth)) -> dict:
-    row = db.one("SELECT * FROM settings_versions WHERE id=?", (vid,))
-    if not row:
-        raise HTTPException(404)
-    row["data"] = json.loads(row["data"])
-    return row
-
-
 # ---------------------------------------------------------------- controls
 @app.post("/api/control/{action}")
-async def api_control(action: str, body: dict | None = None, _: str = Depends(auth)) -> dict:
+async def api_control(action: str, account: str = "standard", body: dict | None = None,
+                      _: str = Depends(auth)) -> dict:
+    account = _acc(account)
     if action == "pause":
-        engine.pause()
+        engine.pause(account)
     elif action == "resume":
-        engine.resume()
+        engine.resume(account)
     elif action == "close_all":
-        return {"closed": await engine.close_all()}
+        return {"closed": await engine.close_all(account)}
     elif action == "kill":
-        return {"closed": await engine.kill()}
+        return {"closed": await engine.kill(account)}
     elif action == "close_position":
         return {"ok": await engine.close_position(int((body or {}).get("id", 0)))}
+    elif action == "reset_account":
+        db.reset_account(account, ENV.starting_balance)
+        engine.cooldown = {k: v for k, v in engine.cooldown.items() if k[0] != account}
+        return {"ok": True}
     else:
         raise HTTPException(404, "unknown action")
     return {"ok": True}

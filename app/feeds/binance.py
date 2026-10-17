@@ -1,9 +1,9 @@
 """BTC and gold prices from Binance USD-M futures (public, no key).
 
-* BTC_USDT <- BTCUSDT perpetual: best bid/ask, mark price and funding rate.
+* BTC_USDT <- BTCUSDT perpetual: best bid/ask (priced like XM's BTCUSD CFD).
 * XAU_USD  <- XAUUSDT gold perpetual: best bid/ask. It tracks spot gold; the bot
-  still trades gold on normal market hours and charges CFD-style swap.
-* REST: 15m klines and funding rate.
+  trades gold on XM market hours and charges XM-style swap.
+* REST: 5m/15m klines.
 * Fallback: if Binance is unreachable (some server regions get HTTP 451), the
   same data is polled from Bybit's public API every 2 seconds.
 """
@@ -19,7 +19,7 @@ import certifi
 import httpx
 import websockets
 
-from .prices import CANDLE_SECONDS, PriceCache
+from .prices import PriceCache, tf_seconds
 
 log = logging.getLogger("feeds.binance")
 
@@ -115,19 +115,21 @@ class BinanceFeed:
                         self.cache.feed("bybit").last_error = str(e)
                 await asyncio.sleep(2)
 
-    async def fetch_candles(self, symbol: str, count: int = 1500, start: datetime | None = None) -> list[dict]:
-        """Completed 15m candles, oldest first. Falls back to Bybit if Binance fails."""
+    async def fetch_candles(self, symbol: str, count: int = 1500, tf: str = "15m",
+                            start: datetime | None = None) -> list[dict]:
+        """Completed candles, oldest first. Falls back to Bybit if Binance fails."""
         feed_sym = self.symbols[symbol]
         if not self.use_bybit_candles:
             try:
-                return await self._binance_klines(feed_sym, count, start)
+                return await self._binance_klines(feed_sym, count, start, tf)
             except Exception as e:  # noqa: BLE001
                 log.warning("Binance klines failed (%s) - switching to Bybit", e)
                 self.use_bybit_candles = True
-        return await self._bybit_klines(feed_sym, count)
+        return await self._bybit_klines(feed_sym, count, tf)
 
-    async def _binance_klines(self, feed_sym: str, count: int, start: datetime | None) -> list[dict]:
-        params: dict = {"symbol": feed_sym, "interval": "15m", "limit": min(count, 1500)}
+    async def _binance_klines(self, feed_sym: str, count: int, start: datetime | None,
+                              tf: str = "15m") -> list[dict]:
+        params: dict = {"symbol": feed_sym, "interval": tf, "limit": min(count, 1500)}
         if start:
             params["startTime"] = int(start.timestamp() * 1000)
         async with httpx.AsyncClient(timeout=20) as client:
@@ -138,8 +140,9 @@ class BinanceFeed:
         return [{"t": int(k[0]) // 1000, "o": float(k[1]), "h": float(k[2]), "l": float(k[3]),
                  "c": float(k[4]), "v": float(k[5])} for k in rows if int(k[6]) < now_ms]
 
-    async def _bybit_klines(self, feed_sym: str, count: int) -> list[dict]:
-        params = {"category": "linear", "symbol": feed_sym, "interval": "15", "limit": min(count, 1000)}
+    async def _bybit_klines(self, feed_sym: str, count: int, tf: str = "15m") -> list[dict]:
+        params = {"category": "linear", "symbol": feed_sym, "interval": str(tf_seconds(tf) // 60),
+                  "limit": min(count, 1000)}
         async with httpx.AsyncClient(timeout=20) as client:
             r = await client.get(f"{BYBIT}/v5/market/kline", params=params)
             r.raise_for_status()
@@ -147,7 +150,7 @@ class BinanceFeed:
         now = datetime.now(timezone.utc).timestamp()
         out = [{"t": int(k[0]) // 1000, "o": float(k[1]), "h": float(k[2]), "l": float(k[3]),
                 "c": float(k[4]), "v": float(k[5])} for k in rows
-               if int(k[0]) // 1000 + CANDLE_SECONDS <= now]
+               if int(k[0]) // 1000 + tf_seconds(tf) <= now]
         out.sort(key=lambda c: c["t"])
         return out
 

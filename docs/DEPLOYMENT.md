@@ -127,7 +127,7 @@ The service restarts automatically if it crashes (`Restart=always`) and starts a
 
 | Day | Do this |
 |---|---|
-| 1 | Settings → choose **Conservative**, and set trading mode to `signals_only` for the first few days if you want to watch before it trades |
+| 1 | Optionally set trading mode to `signals_only` (Settings → General) for the first few days, to watch what each account *would* do before it trades |
 | 1 | Confirm the nightly backup arrives in Telegram (00:30 UTC, 5:30am PKT) |
 | 2–3 | Read the Signals & AI decisions table. Are the skips sensible? Is the AI's reasoning readable? |
 | 3 | Switch trading mode to `auto` |

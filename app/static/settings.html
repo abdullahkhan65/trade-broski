@@ -6,21 +6,30 @@
 <title>Trader Settings</title>
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/common.js"></script>
+<style>
+  .modes-table td, .modes-table th { vertical-align: top; }
+  .modes-table th.mode { min-width: 190px; white-space: normal; }
+  .modes-table td.lbl { white-space: normal; min-width: 220px; }
+  .modes-table input[type=number], .modes-table select { width: 110px; }
+  .modes-table td.changed input, .modes-table td.changed select { border-color: var(--accent); }
+  .grp td { background: var(--panel-2); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  .blurb { font-weight: normal; color: var(--muted); font-size: 12px; margin-top: 4px; }
+</style>
 </head>
 <body>
 <main>
   <section class="panel">
-    <h2>How aggressive should the bot be?</h2>
-    <p class="muted" style="margin-top:0">A profile sets all the risk numbers at once. You can then fine-tune any single setting below - the profile then shows as "custom".
-      Changes apply within seconds, no restart. Your instruments, news feeds and swap rates are kept when you switch profile.</p>
-    <div class="presets" id="presets"></div>
+    <h2>Trading modes: three paper accounts side by side</h2>
+    <p class="muted" style="margin-top:0">Each column is a separate $250 account trading the same live prices with its own rules.
+      Changes apply within seconds, no restart. Every save is kept below so you can roll back.
+      Hard limits are enforced: a value above the maximum is clamped.</p>
+    <div class="table-wrap"><table class="modes-table" id="modes"></table></div>
   </section>
 
   <div id="groups"></div>
 
   <section class="panel" style="margin-top:12px">
     <h2>Change history</h2>
-    <p class="muted" style="margin-top:0">Every save is kept. Revert to any earlier version in one click.</p>
     <div class="table-wrap"><table id="history"></table></div>
   </section>
 </main>
@@ -32,62 +41,69 @@
 
 <script>
 nav("/settings");
-const PRESET_TEXT = {
-  conservative: ["🛡 Conservative", "0.5% risk per trade, leverage 5x / 3x / 2x, max 2 positions, stops at -2% day / -15% from peak. AI must be 65% confident. No trading without AI."],
-  balanced: ["⚖️ Balanced", "The spec defaults: 1% risk, leverage 10x forex / 5x gold / 3x BTC, max 3 positions, -3% day / -6% week / -20% kill switch."],
-  aggressive: ["🔥 Aggressive", "2% risk, leverage 20x / 10x / 5x, up to 4 positions, shrinks oversized trades instead of skipping, news-momentum trades on, halves gold/forex over the weekend."],
-};
 let data, original, schema;
-
 const get = (obj, key) => key.split(".").reduce((o, k) => (o == null ? undefined : o[k]), obj);
 const set = (obj, key, v) => { const p = key.split("."); let o = obj; p.slice(0, -1).forEach((k) => (o = o[k] ??= {})); o[p.at(-1)] = v; };
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
-function input(f, v) {
-  const id = "f-" + f.key.replaceAll(".", "-");
-  if (f.type === "bool") return `<label class="switch"><input type="checkbox" id="${id}" ${v ? "checked" : ""} onchange="changed('${f.key}', this.checked)"><span></span></label>`;
-  if (f.type === "choice") return `<select id="${id}" onchange="changed('${f.key}', this.value)">${f.choices.map((c) => `<option ${c === v ? "selected" : ""}>${c}</option>`).join("")}</select>`;
-  if (f.type === "list") return `<textarea id="${id}" rows="6" onchange="changed('${f.key}', this.value.split('\\n').map(s=>s.trim()).filter(Boolean))">${esc((v || []).join("\n"))}</textarea>`;
-  return `<input type="number" id="${id}" value="${v}" min="${f.min ?? ""}" max="${f.max ?? ""}" step="${f.step ?? "any"}"
-     onchange="changed('${f.key}', this.value === '' ? null : Number(this.value))">`;
+function input(f, v, path) {
+  const on = `onchange="changed('${path}', %V)"`;
+  if (f.type === "bool") return `<label class="switch"><input type="checkbox" ${v ? "checked" : ""} ${on.replace("%V", "this.checked")}><span></span></label>`;
+  if (f.type === "choice") return `<select ${on.replace("%V", "this.value")}>${f.choices.map((c) => `<option ${c === v ? "selected" : ""}>${c}</option>`).join("")}</select>`;
+  if (f.type === "list") return `<textarea rows="6" ${on.replace("%V", "this.value.split('\\n').map(s=>s.trim()).filter(Boolean)")}>${esc((v || []).join("\n"))}</textarea>`;
+  return `<input type="number" value="${v}" min="${f.min ?? ""}" max="${f.max ?? ""}" step="${f.step ?? "any"}" ${on.replace("%V", "this.value === '' ? null : Number(this.value)")}>`;
 }
 
 function render() {
-  document.getElementById("presets").innerHTML = Object.entries(PRESET_TEXT).map(([k, [t, d]]) =>
-    `<button class="preset ${data.profile === k ? "selected" : ""}" onclick="applyPreset('${k}')"><h3>${t}</h3><p>${d}</p></button>`).join("") +
-    (["conservative", "balanced", "aggressive"].includes(data.profile) ? "" : `<div class="muted" style="grid-column:1/-1">Current profile: <b>${esc(data.profile)}</b> (a preset you've fine-tuned)</div>`);
+  const modes = schema.modes;
+  let html = `<tr><th></th>${modes.map((m) => `<th class="mode">${esc(schema.labels[m])}
+      <div class="blurb">${esc(schema.blurbs[m])}</div>
+      <button class="small" style="margin-top:6px" onclick="resetMode('${m}')">Reset to default</button></th>`).join("")}</tr>`;
+  let group = null;
+  for (const f of schema.mode) {
+    if (f.group !== group) { group = f.group; html += `<tr class="grp"><td colspan="${modes.length + 1}">${esc(group)}</td></tr>`; }
+    html += `<tr><td class="lbl">${esc(f.label)}${f.max != null ? ` <span class="muted">(${f.min}–${f.max})</span>` : ""}
+      ${f.help ? `<div class="help muted" style="font-size:12px">${esc(f.help)}</div>` : ""}</td>` +
+      modes.map((m) => { const path = `modes.${m}.${f.key}`; const v = get(data, path);
+        return `<td class="${same(v, get(original, path)) ? "" : "changed"}">${input(f, v, path)}</td>`; }).join("") + "</tr>";
+  }
+  document.getElementById("modes").innerHTML = html;
+
   const groups = {};
-  schema.forEach((f) => (groups[f.group] ??= []).push(f));
+  schema.global.forEach((f) => (groups[f.group] ??= []).push(f));
   document.getElementById("groups").innerHTML = Object.entries(groups).map(([g, fields]) => `
-    <section class="panel" style="margin-top:12px"><h2>${g}</h2>
-      ${fields.map((f) => {
-        const v = get(data, f.key), changedCls = JSON.stringify(v) !== JSON.stringify(get(original, f.key)) ? "changed" : "";
-        const limits = f.max != null ? `<span class="muted"> (${f.min}–${f.max})</span>` : "";
-        return `<div class="field ${f.type === "list" ? "list" : ""} ${changedCls}">
-          <div><label for="f-${f.key.replaceAll(".", "-")}">${esc(f.label)}</label>${limits}${f.help ? `<div class="help">${esc(f.help)}</div>` : ""}</div>
-          <div>${input(f, v)}</div></div>`;
-      }).join("")}
+    <section class="panel" style="margin-top:12px"><h2>${esc(g)}</h2>
+      ${g.startsWith("Broker") ? '<p class="muted" style="margin-top:0">Copy these from MT5: Market Watch → right-click the symbol → Specification. Spreads and swaps are in points, as MT5 shows them.</p>' : ""}
+      ${fields.map((f) => { const v = get(data, f.key);
+        return `<div class="field ${f.type === "list" ? "list" : ""} ${same(v, get(original, f.key)) ? "" : "changed"}">
+          <div><label>${esc(f.label)}</label>${f.max != null && f.max < 10000 ? ` <span class="muted">(${f.min}–${f.max})</span>` : ""}
+          ${f.help ? `<div class="help">${esc(f.help)}</div>` : ""}</div><div>${input(f, v, f.key)}</div></div>`; }).join("")}
     </section>`).join("");
-  const n = schema.filter((f) => JSON.stringify(get(data, f.key)) !== JSON.stringify(get(original, f.key))).length;
+
+  const n = countChanges(data, original);
   document.getElementById("dirty").textContent = n ? `${n} unsaved change${n > 1 ? "s" : ""}` : "No unsaved changes";
 }
 
-function changed(key, v) { set(data, key, v); render(); }
+function countChanges(a, b) {
+  let n = 0;
+  schema.global.forEach((f) => { if (!same(get(a, f.key), get(b, f.key))) n++; });
+  schema.modes.forEach((m) => schema.mode.forEach((f) => { if (!same(get(a, `modes.${m}.${f.key}`), get(b, `modes.${m}.${f.key}`))) n++; }));
+  return n;
+}
+
+function changed(path, v) { set(data, path, v); render(); }
 function reset() { data = structuredClone(original); render(); }
 
 async function save() {
-  try {
-    const r = await api("/api/settings", { method: "PUT", body: { ...data, profile: "custom" } });
-    toast("Saved - live in a few seconds"); await load();
-  } catch (e) { toast("Not saved: " + e.message); }
+  try { await api("/api/settings", { method: "PUT", body: data }); toast("Saved - live in a few seconds"); await load(); }
+  catch (e) { toast("Not saved: " + e.message); }
 }
-
-async function applyPreset(name) {
-  if (!confirm(`Switch to the ${name} profile? This replaces the risk, signal and AI settings.`)) return;
-  await api(`/api/settings/preset/${name}`, { method: "POST" }); toast(`${name} profile applied`); load();
+async function resetMode(m) {
+  if (!confirm(`Reset all ${schema.labels[m]} rules to their defaults?`)) return;
+  await api(`/api/settings/reset/${m}`, { method: "POST" }); toast("Reset"); load();
 }
-
 async function revert(id) {
-  if (!confirm("Revert to this version?")) return;
+  if (!confirm("Revert all settings to this version?")) return;
   await api(`/api/settings/revert/${id}`, { method: "POST" }); toast("Reverted"); load();
 }
 

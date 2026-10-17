@@ -1,13 +1,15 @@
 # Strategy: how a trade happens
 
 ```
-every 5s     live bid/ask ──► stops / targets / stop-out / loss limits
-every 60s    new closed 15m candle? ──► filters ──► signal? ──► pre-checks ──► Haiku TAKE/SKIP ──► risk engine ──► paper broker
+every 3s     live bid/ask ──► stops / targets / breakeven / stop-out / limits   (all 3 accounts)
+every 60s    new closed candle of the account's timeframe (M15 or M5)?
+               ──► filters ──► signal? ──► pre-checks ──► Haiku TAKE/SKIP (with that account's playbook)
+               ──► lot sizing ──► paper broker  (done separately for each account)
 every 10m    RSS headlines ──┐
 hourly       econ calendar ──┼──► AI news digest (bias + risk per instrument) ──► used by pre-checks, prompt and news signal
 daily        fear & greed  ──┘
-00:05 UTC    daily summary + AI review (lessons) + auto-disable losing signals
-Sun 12:00    weekly AI playbook rewrite
+00:05 UTC    daily summary + AI review per account (lessons) + auto-disable losing signals
+Sun 12:00    weekly AI playbook rewrite, one per account
 ```
 
 ## 1. Prices (24/7)
@@ -16,7 +18,7 @@ Sun 12:00    weekly AI playbook rewrite
 - **USD/JPY** (off by default): Yahoo Finance, polled every 15s. Kraken's yen market is too thin, and OANDA doesn't accept Pakistan.
 - 15m candles are refreshed from each source's REST API every minute.
 - **Honesty adjustments.** Exchange spreads are tighter than a retail broker's, so each gold/forex quote is widened to a minimum spread (Settings → Costs; gold $0.30, EUR 0.8 pip, GBP 1.2 pips). These venues also quote at weekends, but the bot ignores weekend quotes for stops, just as a real broker wouldn't fill then. Gold and forex are only *traded* from Sunday 5pm to Friday 5pm New York, with gold pausing for an hour each day at 5pm NY.
-- **BTC**: the Binance futures WebSocket sends the best bid/ask on every change, plus the mark price and funding rate every second. If Binance is unreachable, Bybit's public API is polled every 2 seconds instead.
+- **BTC**: the Binance futures WebSocket sends the best bid/ask on every change; it's simulated as XM's BTCUSD CFD (swap, no funding). If Binance is unreachable, Bybit's public API is polled every 2 seconds instead.
 - The dashboard shows prices live through a server-sent event stream that updates every second.
 
 ## 2. Signal engine (free)
@@ -61,38 +63,41 @@ Then:
 
 Thinking is switched off and effort is low. These are short judgement calls, and thinking tokens would be billed and could eat the 400-token reply cap.
 
-## 5. Risk engine (code, the AI can't override it)
+## 5. Risk engine: XM lot sizing (code, the AI can't override it)
 ```
-risk $        = equity × risk%                          (1% of $250 = $2.50)
-units         = risk $ ÷ stop distance in $ per unit
-leverage      = notional ÷ equity                       must be ≤ cap, else skip (or shrink)
-margin        = notional ÷ broker margin leverage       (30:1 forex, 20:1 gold & BTC)
-total margin  ≤ max margin used %
+risk $          = equity × the account's risk %
+loss per 1 lot  = stop distance × contract size     (EURUSD 100,000 · GOLD 100 oz · BTCUSD 1)
+lots            = risk $ ÷ loss per 1 lot, rounded DOWN to 0.01
+lots < 0.01?    → mode's rule: skip, or take 0.01 if its risk ≤ "allow up to" %
+leverage        = notional ÷ equity  ≤ the mode's cap (lots reduced to fit)
+margin          = notional ÷ XM leverage (1:1000 FX/gold, 1:50 BTC by default)
+total margin    ≤ the mode's max margin used %
 ```
-Example: EUR/USD at 1.1000 with ATR 8 pips gives a stop of 12 pips, 2,083 units, $2,290 notional, **9.2x leverage** and $76 margin (31% of equity).
+Example, Standard account ($250, 1%): EURUSD ATR 8 pips → stop 12 pips → $120 per lot → $2.50 ÷ $120 = 0.0208 → **0.02 lots**, risking $2.40, margin $2.24.
+Gold on M15 (ATR ~$8 → stop $12): 0.01 lot already risks $12 = 4.8%. Standard **skips** it, Moderate (≤ 3%) skips it, Aggressive (≤ 5%) takes 0.01 lot. See SETTINGS.md → "The 0.01-lot problem".
 
-**Why margin isn't "notional ÷ your cap".** On 15m candles, a 1%-risk trade with a 1.5×ATR stop typically needs 5–10x leverage. If margin were notional ÷ 10, a single EUR/USD trade would use about 92% of equity, and the "≤ 50% margin" rule would block nearly every trade. Real brokers charge margin at their own rate (OANDA Europe: 30:1 on majors, 20:1 on gold), so the simulator does the same. Your leverage cap still limits how big each position can be.
+## 6. Paper broker (XM Standard simulation)
+- **Quotes:** the feed's mid price, with XM's spread in points around it (GOLD 35, EURUSD 16, GBPUSD 21, BTCUSD 4000). If the live spread is wider, the live one is used. Buys fill at the ask, sells at the bid. No commission (XM Standard).
+- **Market hours:** gold and forex quotes **freeze at Friday's close** and weekend candles are dropped, as on MT5. Stops aren't checked while the market is closed, so a held position takes the Monday gap.
+- **Stops:** checked every 3 seconds against bid/ask. **If price gapped through the stop, the fill is the first price seen**, marked "stop loss (gap)". Targets fill at the target price exactly, never better.
+- **Breakeven:** per mode, at +X R the stop moves to the entry price ("breakeven stop" on exit).
+- **Swap:** XM points per lot per night at 17:00 New York. FX and gold are charged ×3 on Wednesday and not at weekends; BTCUSD is charged every night.
+- **Margin call and stop-out:** at 20% margin level the biggest loser is closed, as XM does.
+- **Friday close:** gold/forex positions are closed or halved before the weekend, per mode. A 0.01 lot can't be halved, so it's closed.
+- **Daily target / limits:** per account. Hitting the daily profit target or loss limit stops new trades until the next UTC day.
 
-## 6. Paper broker
-- Buys fill at the ask and sells at the bid, with the spread widened to at least the broker minimum. BTC also pays 0.02% slippage and a 0.05% taker fee on each side.
-- Stops are checked every 5s against bid/ask. **If price has gapped through the stop, the fill is the first price seen, not the stop**, and the trade is marked "stop (gap)". Targets fill at the target price exactly, never better.
-- Swap (gold/forex) is charged daily at 5pm New York, ×3 on Wednesday, using the rates from settings.
-- Funding (BTC) is charged every 8h at Binance's live funding rate. When the rate is positive, longs pay.
-- Stop-out: if margin level falls below 50%, the largest loser is closed.
-- Friday close: gold/forex positions are closed or halved 30 min before the weekend (per settings).
-
-## 7. Learning loop
-1. **Per trade**: the signal, Haiku's reason, entry and exit, P&L in $ and in R, fees, swap and funding are all stored.
-2. **Daily (00:05 UTC)**: Haiku reads yesterday's trades and skipped signals and writes 3–5 lessons. You get a Telegram summary.
-3. **Weekly (Sun 12:00 UTC)**: Haiku rewrites the playbook (max 12 one-line rules) from the week's lessons and the scorecard. Old versions are kept, and you can edit or roll back.
-4. **Scorecard (daily)**: a signal type with a negative average R after 30+ trades on an instrument is **switched off automatically**.
-5. **Backtest before changing rules**: `python -m app.backtest --symbol all --days 730`. An AI can easily "learn" patterns that were just luck.
+## 7. Learning loop (per account)
+1. **Per trade:** account, lots, signal, Haiku's reason, entry and exit, P&L in $ and in R, and swap are stored.
+2. **Daily (00:05 UTC):** for each account, Haiku reads yesterday's trades and skipped signals **for that account** and writes 3–5 lessons.
+3. **Weekly (Sun 12:00 UTC):** each account's playbook is rewritten from its own lessons and scorecard, staying true to its style. Old versions are kept, and you can edit or roll back.
+4. **Scorecard (daily, per account):** a signal with a negative average R after 30+ trades on a symbol is **switched off for that account**.
+5. **Backtest before changing rules:** `python -m app.backtest --mode all --symbol all --days 365`.
 
 ## 8. First backtest result (honest)
 Run on 17 Oct 2026 on BTC:
 
 ```
-BTC_USDT · 120 days · balanced profile
+BTC_USDT · 120 days · 1% risk (before the XM/3-mode rebuild)
 Trades: 244 | win rate 31.6% | avg R -0.273
 Final equity $125.35 (-49.9%) | fees $93.38
 Buy & hold (unleveraged): +30.3%

@@ -1,4 +1,4 @@
-"""Free, coded signal engine. Runs on CLOSED 15m candles.
+"""Free, coded signal engine. Runs on CLOSED candles (M15, or M5 for the scalper).
 
 Signals:
 * trend_pullback  - price on the trend side of the slow EMA pulls back to the fast EMA
@@ -23,6 +23,11 @@ from .instruments import Instrument
 from .sessions import asian_range_bounds, in_trading_session, is_forex_like
 
 TWENTY_DAYS_OF_15M = 20 * 24 * 4
+TF_SECONDS = {"5m": 300, "15m": 900}
+
+
+def _tf(cfg: dict) -> int:
+    return TF_SECONDS.get(cfg.get("timeframe", "15m"), 900)
 
 
 @dataclass
@@ -57,7 +62,7 @@ def check_filters(inst: Instrument, candles: list[dict], cfg: dict, now: datetim
     if not cur_atr:
         return FilterResult(False, "ATR not ready")
     if atr_floor is None:
-        window = [a for a in atr_series[-TWENTY_DAYS_OF_15M:] if a]
+        window = [a for a in atr_series[-(20 * 86400 // _tf(cfg)):] if a]
         floor = ind.percentile(window, s["dead_market_percentile"])
     else:
         floor = atr_floor      # backtest passes a precomputed 20-day floor (much faster)
@@ -108,7 +113,7 @@ def session_breakout(inst: Instrument, candles: list[dict], cfg: dict, atr: floa
         return None
     st, et = int(start.timestamp()), int(end.timestamp())
     asian = [c for c in candles if st <= c["t"] < et]
-    if len(asian) < 20:                          # need most of the 28 candles
+    if len(asian) < 0.7 * (et - st) / _tf(cfg):   # need most of the Asian session's candles
         return None
     hi, lo = max(c["h"] for c in asian), min(c["l"] for c in asian)
     after = [c for c in candles if c["t"] >= et]

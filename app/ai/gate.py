@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 from ..instruments import Instrument
+from ..settings_store import MODE_BLURBS, MODE_LABELS
 from ..signals import Signal
 from .client import AIClient, AIResult
 
@@ -28,31 +29,33 @@ SCHEMA = {
     "additionalProperties": False,
 }
 
-SYSTEM = """You are the trade gate for a paper-trading bot (virtual money) on gold, forex majors and BTC.
-A coded signal has fired. Decide TAKE or SKIP for THIS signal only. You cannot change its side.
+SYSTEM = """You are the trade gate for ONE paper-trading account (virtual money) on an XM-style MT5
+account trading GOLD, forex majors and BTCUSD. A coded signal has fired. Decide TAKE or SKIP for THIS
+signal only. You cannot change its side. Judge it against THIS account's trading style and playbook.
 
 Judge:
 - Does the recent price action support the signal, or is it chasing/late/into resistance?
 - Do upcoming high-impact events or the news digest argue against it?
-- Does the playbook (lessons learned from past trades) say to avoid this setup?
+- Does this account's playbook (its rules and lessons) say to avoid this setup?
+- Does it fit the account's style (e.g. a scalper wants quick momentum; a standard trader wants A-grade setups)?
 - Recent results on this signal type and instrument.
 
 Rules:
 - Prefer SKIP when evidence is mixed. Skipping costs nothing; bad trades cost money.
-- stop_atr between 1.0 and 3.0; target_atr at least 1.5x stop_atr.
+- stop_atr and target_atr within the account's limits given below.
 - leverage is only a suggestion; risk is fixed by code.
 - confidence is your probability (0-1) that the trade reaches its target before its stop.
 - reason: one short sentence a human can read on a dashboard.
 Reply with JSON only."""
 
 
-def _candles_summary(candles: list[dict], decimals: int, n: int = 48) -> str:
+def _candles_summary(candles: list[dict], decimals: int, tf: str = "15m", n: int = 48) -> str:
     rows = candles[-n:]
     if not rows:
         return "none"
     first, last = rows[0], rows[-1]
     hi, lo = max(c["h"] for c in rows), min(c["l"] for c in rows)
-    lines = [f"last {len(rows)} x 15m: open {first['o']:.{decimals}f} -> close {last['c']:.{decimals}f}, "
+    lines = [f"last {len(rows)} x {tf}: open {first['o']:.{decimals}f} -> close {last['c']:.{decimals}f}, "
              f"high {hi:.{decimals}f}, low {lo:.{decimals}f}",
              "closes (oldest->newest, every 2nd candle): " +
              " ".join(f"{c['c']:.{decimals}f}" for c in rows[::2])]
@@ -64,9 +67,11 @@ def _candles_summary(candles: list[dict], decimals: int, n: int = 48) -> str:
 
 def build_prompt(inst: Instrument, sig: Signal, candles: list[dict], account: dict,
                  positions: list[dict], recent_trades: list[dict], scorecard_line: str,
-                 playbook: str, news: dict, session: str, spread: float | None) -> str:
+                 playbook: str, news: dict, session: str, spread: float | None, cfg: dict) -> str:
     d = inst.decimals
-    pos_lines = [f"- {p['symbol']} {p['side']} lev {p['leverage']} entry {p['entry']}" for p in positions] or ["- none"]
+    mode = cfg["mode"]
+    e = cfg["exits"]
+    pos_lines = [f"- {p['symbol']} {p['side']} {p['lots']:.2f} lots entry {p['entry']}" for p in positions] or ["- none"]
     trade_lines = [
         f"- {t['symbol']} {t['side']} {t['signal']} {t['pnl_r']:+.2f}R ({t['exit_reason']})"
         if t.get("pnl_r") is not None else f"- {t['symbol']} {t['side']} {t['signal']} ${t['pnl_usd']:+.2f}"
@@ -78,16 +83,21 @@ def build_prompt(inst: Instrument, sig: Signal, candles: list[dict], account: di
     digest = news.get("digest")
     digest_line = (f"bias {digest.get('bias', 0):+.2f}, risk {digest.get('risk', '?')}: {digest.get('summary', '')}"
                    if digest else "no digest")
-    return f"""SIGNAL
-instrument: {inst.symbol} ({inst.display})
+    return f"""ACCOUNT
+{MODE_LABELS[mode]} - {MODE_BLURBS[mode]}
+timeframe: {cfg['timeframe']}; risk per trade {cfg['risk']['risk_per_trade_pct']}%;
+stop_atr allowed {e['min_stop_atr']}-{e['max_stop_atr']}; min reward:risk {e['min_reward_risk']}
+
+SIGNAL
+symbol: {inst.xm}
 side: {sig.side}
 type: {sig.type}
 why: {sig.note}
-price: {sig.price:.{d}f}  ATR(14,15m): {sig.atr:.{d}f}  spread: {spread if spread is not None else 'n/a'}
+price: {sig.price:.{d}f}  ATR(14,{cfg['timeframe']}): {sig.atr:.{d}f}  spread: {spread if spread is not None else 'n/a'}
 session now: {session}
 
 PRICE ACTION
-{_candles_summary(candles, d)}
+{_candles_summary(candles, d, cfg['timeframe'])}
 
 ACCOUNT
 equity ${account['equity']:.2f}, margin used {account['margin_used_pct']:.0f}%, status {account['status']}
@@ -105,7 +115,7 @@ upcoming events:
 recent headlines:
 {chr(10).join(head_lines)}
 
-PLAYBOOK
+PLAYBOOK FOR THIS ACCOUNT (always follow it)
 {playbook or '(empty - no lessons yet)'}
 """
 
@@ -129,7 +139,7 @@ def validate_reply(data: dict, sig: Signal, min_conf: float) -> tuple[bool, str]
 
 
 async def ask(ai: AIClient, cfg: dict, prompt: str) -> AIResult:
-    return await ai.call_json(cfg, "gate", SYSTEM, prompt, SCHEMA, max_tokens=400)
+    return await ai.call_json(cfg, f"gate:{cfg['mode']}", SYSTEM, prompt, SCHEMA, max_tokens=400)
 
 
 def dumps(data: dict | None) -> str | None:

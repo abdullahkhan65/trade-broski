@@ -30,14 +30,14 @@ One Python process (FastAPI + asyncio + APScheduler) and one SQLite file. There 
 |---|---|
 | `app/main.py` | App wiring, lifespan (starts feeds and loops), scheduled jobs, HTTP Basic auth, all API routes |
 | `app/config.py` | `.env` → `ENV` (secrets, paths, `PAPER_ONLY`). No trading rules here |
-| `app/settings_store.py` | Trading rules: defaults, presets, field schema with **hard limits**, validation, versioning |
-| `app/instruments.py` | The 5 instruments, P&L and notional maths in USD (USD/JPY conversion), broker margin rates |
+| `app/settings_store.py` | Global + per-mode rules, the 3 mode defaults, field schemas with **hard limits**, validation, versioning, `cfg_for(mode)` |
+| `app/instruments.py` | The 5 symbols as XM defines them: MT5 name, digits/point, contract size, lot limits; P&L and pip-value maths |
 | `app/sessions.py` | Market hours, London/NY sessions, Asian range, weekly close, rollover (DST-aware) |
 | `app/indicators.py` | EMA, RSI, ATR and percentile in pure Python |
 | `app/signals.py` | Filters + `trend_pullback`, `session_breakout`, `news_momentum` |
-| `app/risk.py` | Position sizing, leverage and margin caps, portfolio rules, loss-limit status |
-| `app/broker.py` | Paper broker: fills, fees, stops and gaps, targets, partial closes, swap, funding, stop-out |
-| `app/engine.py` | Orchestration loops, pre-checks, AI gate flow, weekend logic, feed health, snapshots, controls |
+| `app/risk.py` | Lot sizing (0.01 step, min-lot rule), leverage and margin caps, portfolio rules, loss limits and daily target |
+| `app/broker.py` | XM paper broker for all accounts: XM spreads, fills, stops and gaps, breakeven, partial closes, swap in points, stop-out |
+| `app/engine.py` | Loops over the 3 accounts: pre-checks, AI gate flow, weekend logic, feed health, snapshots, controls |
 | `app/ai/client.py` | The only place that calls Anthropic: budget guards, 4k-token input cap, structured JSON, cost log |
 | `app/ai/gate.py` | Gate prompt, JSON schema, reply validation |
 | `app/ai/review.py` | Daily lessons, weekly playbook, seed playbook |
@@ -51,36 +51,37 @@ One Python process (FastAPI + asyncio + APScheduler) and one SQLite file. There 
 | `app/backtest.py` | History download and cache, offline simulation with the same signal and risk code |
 | `app/check.py` | Pre-flight connectivity check |
 
-## Database (SQLite, WAL mode)
+## Database (SQLite, WAL mode, schema version 2)
+On first start after an upgrade from the single-account version, the old file is **moved aside** (`trader.db.v0-<time>.bak`, kept) and a fresh 3-account database is created.
 
 | Table | Contents |
 |---|---|
-| `account` | one row: cash, equity, peak, starting balance, status (active / paused / paused_daily / paused_weekly / halted) |
-| `prices` | 15m OHLC per instrument (last ~3000 kept) |
-| `positions` | open positions: side, units, leverage, entry, stop, target, margin, risk $, fees/swap/funding so far, signal, AI reason |
-| `trades` | closed trades: P&L $ (net), P&L R, fees, swap, funding, exit reason |
-| `decisions` | every signal: taken or not, the reason, Haiku's raw reply |
-| `cost_log` | every AI call: purpose, tokens, $ and errors |
-| `equity_snapshots` | every 15 min: equity plus BTC and gold buy-and-hold benchmarks |
-| `playbook_versions`, `lessons` | the learning loop |
-| `settings_versions` | full settings JSON per save (the current one is the latest row) |
-| `disabled_signals` | signal types auto-disabled per instrument |
-| `news_items`, `calendar_events`, `news_digests` | the news pipeline (7 days of headlines, 30 days of digests) |
-| `kv` | small engine state: day/week start equity, benchmark start prices |
+| `accounts` | one row per mode: cash (MT5 Balance), equity, peak, starting balance, status (active / paused / paused_daily / paused_weekly / target_hit / halted) |
+| `prices` | M5 and M15 OHLC per symbol (`tf` column); weekend candles for gold/forex are dropped |
+| `positions` | open positions: account, lots, units, entry, stop, initial stop, target, margin, risk $, swap, signal, AI reason (id = MT5 ticket) |
+| `trades` | closed trades: account, ticket, lots, P&L $ (net), P&L R, swap, exit reason |
+| `decisions` | every signal per account: taken or not, the reason, Haiku's raw reply |
+| `cost_log` | every AI call: purpose (`gate:<mode>`, `news_digest`, `daily_review:<mode>`…), tokens, $ |
+| `equity_snapshots` | every 15 min per account, plus BTC and gold buy-and-hold benchmarks |
+| `playbook_versions`, `lessons` | the learning loop, per mode |
+| `settings_versions` | full settings JSON per save |
+| `disabled_signals` | auto-disabled signals per account and symbol |
+| `news_items`, `calendar_events`, `news_digests` | the news pipeline |
+| `kv` | engine state: day/week start equity per account, benchmark start prices |
 
 ## API (all routes need HTTP Basic auth except `/healthz`)
 
 | Method & path | Purpose |
 |---|---|
-| `GET /api/state` | account, positions, quotes, AI budget, feed status, config warnings |
-| `GET /api/stream` | server-sent events: quotes, account and position P&L every 1s |
-| `GET /api/equity?days=` | equity snapshots |
-| `GET /api/trades`, `/api/decisions`, `/api/scorecard`, `/api/news`, `/api/playbook` | dashboard data |
-| `GET/PUT /api/settings` | read the schema and current values / save (validated and clamped) |
-| `POST /api/settings/preset/{conservative,balanced,aggressive}` | apply a profile |
-| `POST /api/settings/revert/{id}` | roll back settings |
-| `PUT /api/playbook`, `POST /api/playbook/rollback/{id}` | edit or roll back the playbook |
-| `POST /api/control/{pause,resume,close_all,kill,close_position}` | controls |
+| `GET /api/state?account=` | that account, all accounts' summaries, its positions, Market Watch quotes (XM bid/ask/spread, 0.01-lot risk), AI budget, feeds |
+| `GET /api/stream?account=` | server-sent events every 1s: quotes, account, position profit |
+| `GET /api/candles?symbol=&tf=` | M5/M15 candles for the chart |
+| `GET /api/compare` | per-account stats: equity, trades, win rate, avg R, avg %/day, max drawdown |
+| `GET /api/equity`, `/api/trades?account=`, `/api/decisions?account=`, `/api/scorecard?account=`, `/api/playbook?mode=`, `/api/news` | data for the tabs |
+| `GET/PUT /api/settings` | schema (global + per-mode fields) and values / save (validated and clamped) |
+| `POST /api/settings/reset/{mode}`, `/api/settings/revert/{id}` | reset one mode / roll back |
+| `PUT /api/playbook`, `POST /api/playbook/rollback/{id}` | edit or roll back a mode's playbook |
+| `POST /api/control/{pause,resume,close_all,kill,close_position,reset_account}?account=` | account controls |
 | `POST /api/news/digest` | force a news digest now |
 
 ## Design rules worth keeping

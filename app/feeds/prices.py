@@ -1,12 +1,25 @@
-"""Live quote cache + 15m candle storage shared by both feeds."""
+"""Live quote cache + candle storage shared by all feeds.
+
+Gold and forex quotes FREEZE while the real market is closed (weekend, gold's
+daily break): Binance/Kraken keep trading 24/7, but XM doesn't, so the bot and
+the dashboard show the last price before the close, like MT5 does. Candles
+from closed hours are dropped for the same reason.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from ..db import DB
+from ..instruments import INSTRUMENTS
+from ..sessions import market_open
 
-CANDLE_SECONDS = 15 * 60
+TIMEFRAMES = {"5m": 5 * 60, "15m": 15 * 60}
+CANDLE_SECONDS = TIMEFRAMES["15m"]
+
+
+def tf_seconds(tf: str) -> int:
+    return TIMEFRAMES[tf]
 
 
 @dataclass
@@ -14,7 +27,7 @@ class Quote:
     bid: float
     ask: float
     ts: datetime
-    mark: float | None = None      # BTC mark price
+    mark: float | None = None
 
     @property
     def mid(self) -> float:
@@ -37,14 +50,17 @@ class FeedStatus:
 @dataclass
 class PriceCache:
     quotes: dict[str, Quote] = field(default_factory=dict)
-    funding_rate: float | None = None           # BTC last funding rate (per 8h)
+    funding_rate: float | None = None
     next_funding_time: datetime | None = None
     status: dict[str, FeedStatus] = field(default_factory=dict)
 
     def update(self, symbol: str, bid: float, ask: float, ts: datetime | None = None,
                mark: float | None = None) -> None:
-        q = self.quotes.get(symbol)
         now = ts or datetime.now(timezone.utc)
+        q = self.quotes.get(symbol)
+        inst = INSTRUMENTS.get(symbol)
+        if q and inst and not market_open(inst, now):
+            return                      # frozen at the last pre-close price
         if q:
             q.bid, q.ask, q.ts = bid, ask, now
             if mark is not None:
@@ -65,24 +81,34 @@ class PriceCache:
         return self.status.setdefault(name, FeedStatus(name))
 
 
-def store_candles(db: DB, symbol: str, candles: list[dict]) -> None:
+def in_market_hours(symbol: str, candle_t: int, tf: str) -> bool:
+    inst = INSTRUMENTS.get(symbol)
+    if not inst:
+        return True
+    start = datetime.fromtimestamp(candle_t, tz=timezone.utc)
+    end = datetime.fromtimestamp(candle_t + tf_seconds(tf) - 1, tz=timezone.utc)
+    return market_open(inst, start) or market_open(inst, end)
+
+
+def store_candles(db: DB, symbol: str, candles: list[dict], tf: str = "15m") -> None:
     """candles: [{t, o, h, l, c, v}] - only completed candles should be passed."""
+    rows = [(symbol, tf, c["t"], c["o"], c["h"], c["l"], c["c"], c.get("v", 0))
+            for c in candles if in_market_hours(symbol, c["t"], tf)]
     db.executemany(
-        "INSERT INTO prices(symbol, t, o, h, l, c, v) VALUES (?,?,?,?,?,?,?) "
-        "ON CONFLICT(symbol, t) DO UPDATE SET o=excluded.o, h=excluded.h, l=excluded.l, "
-        "c=excluded.c, v=excluded.v",
-        [(symbol, c["t"], c["o"], c["h"], c["l"], c["c"], c.get("v", 0)) for c in candles],
-    )
+        "INSERT INTO prices(symbol, tf, t, o, h, l, c, v) VALUES (?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(symbol, tf, t) DO UPDATE SET o=excluded.o, h=excluded.h, l=excluded.l, "
+        "c=excluded.c, v=excluded.v", rows)
 
 
-def load_candles(db: DB, symbol: str, n: int = 2000) -> list[dict]:
-    rows = db.all("SELECT t, o, h, l, c, v FROM prices WHERE symbol=? ORDER BY t DESC LIMIT ?", (symbol, n))
+def load_candles(db: DB, symbol: str, n: int = 2000, tf: str = "15m") -> list[dict]:
+    rows = db.all("SELECT t, o, h, l, c, v FROM prices WHERE symbol=? AND tf=? ORDER BY t DESC LIMIT ?",
+                  (symbol, tf, n))
     rows.reverse()
     return rows
 
 
-def prune_candles(db: DB, keep: int = 3000) -> None:
-    for (sym,) in [(r["symbol"],) for r in db.all("SELECT DISTINCT symbol FROM prices")]:
+def prune_candles(db: DB, keep: int = 6000) -> None:
+    for r in db.all("SELECT DISTINCT symbol, tf FROM prices"):
         db.execute(
-            "DELETE FROM prices WHERE symbol=? AND t < (SELECT t FROM prices WHERE symbol=? "
-            "ORDER BY t DESC LIMIT 1 OFFSET ?)", (sym, sym, keep))
+            "DELETE FROM prices WHERE symbol=? AND tf=? AND t < (SELECT t FROM prices WHERE symbol=? AND tf=? "
+            "ORDER BY t DESC LIMIT 1 OFFSET ?)", (r["symbol"], r["tf"], r["symbol"], r["tf"], keep))

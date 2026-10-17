@@ -1,21 +1,27 @@
-"""Risk engine: position sizing and account-level limits. The AI can't override any of this.
+"""Risk engine: lot sizing and account limits. The AI can't override any of this.
 
-Sizing: units = (equity x risk%) / (stop distance in USD per unit).
-Leverage needed = notional / equity. If that's above the cap the trade is
-skipped (or shrunk, if you chose 'shrink' on the settings page).
-Margin = notional / broker margin leverage (30:1 forex, 20:1 gold/BTC).
+Sizing, like you'd do it on MT5:
+  risk $          = equity x risk %
+  loss per 1 lot  = stop distance x contract size  (in USD)
+  lots            = risk $ / loss per 1 lot, rounded DOWN to the 0.01 lot step
+If that's below XM's 0.01 minimum, the mode's min-lot rule decides: skip, or
+take 0.01 lot if its risk is still within `min_lot_max_risk_pct`.
+Effective leverage (notional / equity) must stay under the mode's cap;
+margin = notional / XM leverage, and total margin must stay under the cap.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
-from .instruments import BROKER_MARGIN_LEVERAGE, Instrument, notional_usd, risk_per_unit_usd
+from .instruments import Instrument, notional_usd, usd_per_lot
 
 
 @dataclass
 class Order:
     symbol: str
     side: str
+    lots: float
     units: float
     entry: float
     stop: float
@@ -24,8 +30,8 @@ class Order:
     margin: float
     notional: float
     risk_usd: float
-    effective_leverage: float
-    shrunk: bool = False
+    risk_pct: float
+    note: str = ""
 
 
 @dataclass
@@ -51,6 +57,15 @@ def clamp_exit_multiples(cfg: dict, stop_atr: float | None, target_atr: float | 
     return s, t
 
 
+def floor_lots(inst: Instrument, lots: float) -> float:
+    steps = math.floor(lots / inst.lot_step + 1e-9)
+    return round(min(steps * inst.lot_step, inst.max_lot), 2)
+
+
+def broker_leverage(cfg: dict, inst: Instrument) -> float:
+    return float(cfg["broker"][f"leverage_{inst.asset_class}"])
+
+
 def size_order(inst: Instrument, cfg: dict, side: str, entry: float, atr: float,
                equity: float, margin_used: float, stop_atr: float | None = None,
                target_atr: float | None = None) -> Order | Rejection:
@@ -63,38 +78,52 @@ def size_order(inst: Instrument, cfg: dict, side: str, entry: float, atr: float,
     if stop_dist <= 0:
         return Rejection("zero stop distance")
 
-    risk_usd = equity * r["risk_per_trade_pct"] / 100
-    units = risk_usd / risk_per_unit_usd(inst, stop_dist, entry)
+    loss_per_lot = usd_per_lot(inst, stop_dist, entry)
+    risk_budget = equity * r["risk_per_trade_pct"] / 100
+    lots = floor_lots(inst, risk_budget / loss_per_lot)
+    note = ""
+    if lots < inst.min_lot:
+        min_risk_pct = 100 * loss_per_lot * inst.min_lot / equity
+        if r["min_lot_rule"] == "allow" and min_risk_pct <= r["min_lot_max_risk_pct"]:
+            lots = inst.min_lot
+            note = f"0.01 lot = {min_risk_pct:.1f}% risk (above {r['risk_per_trade_pct']}%, allowed up to {r['min_lot_max_risk_pct']}%)"
+        else:
+            return Rejection(f"0.01 lot would risk {min_risk_pct:.1f}% (${loss_per_lot * inst.min_lot:.2f}); "
+                             f"limit {r['risk_per_trade_pct'] if r['min_lot_rule'] == 'skip' else r['min_lot_max_risk_pct']}%")
+
     cap = float(r[f"max_leverage_{inst.asset_class}"])
+    units = lots * inst.contract_size
     notional = notional_usd(inst, units, entry)
     eff_lev = notional / equity
-    shrunk = False
     if eff_lev > cap:
-        if r["oversize_action"] != "shrink":
-            return Rejection(f"needs {eff_lev:.1f}:1 leverage, cap is {cap:.0f}:1 (stop too tight for this size)")
-        units *= cap / eff_lev
+        lots = floor_lots(inst, lots * cap / eff_lev)
+        if lots < inst.min_lot:
+            return Rejection(f"0.01 lot = {eff_lev:.1f}x leverage, cap is {cap:.0f}x")
+        units = lots * inst.contract_size
         notional = notional_usd(inst, units, entry)
         eff_lev = notional / equity
-        risk_usd = units * risk_per_unit_usd(inst, stop_dist, entry)
-        shrunk = True
+        note = (note + "; " if note else "") + f"reduced to fit {cap:.0f}x leverage cap"
 
-    # The AI's leverage is advisory only: size always comes from the stop distance,
-    # and the position's leverage is whatever that size actually is (<= cap).
-    margin = notional / BROKER_MARGIN_LEVERAGE[inst.asset_class]
+    margin = notional / broker_leverage(cfg, inst)
     max_margin = equity * r["max_margin_used_pct"] / 100
     if margin_used + margin > max_margin:
         return Rejection(f"margin would be {100 * (margin_used + margin) / equity:.0f}% of equity, max {r['max_margin_used_pct']:.0f}%")
-    if units <= 0:
-        return Rejection("size rounds to zero")
-    return Order(inst.symbol, side, units, entry, stop, target, round(eff_lev, 2), margin, notional,
-                 risk_usd, eff_lev, shrunk)
+    risk_usd = loss_per_lot * lots
+    return Order(inst.symbol, side, lots, units, entry, stop, target, round(eff_lev, 2), margin, notional,
+                 risk_usd, 100 * risk_usd / equity, note)
+
+
+def min_lot_risk_pct(inst: Instrument, cfg: dict, atr: float, price: float, equity: float) -> float:
+    """Risk of a 0.01 lot with the mode's default stop - shown on the dashboard."""
+    loss = usd_per_lot(inst, cfg["exits"]["default_stop_atr"] * atr, price) * inst.min_lot
+    return 100 * loss / equity if equity > 0 else 0.0
 
 
 def portfolio_check(inst: Instrument, cfg: dict, open_positions: list[dict]) -> str | None:
     """Pre-AI checks so we never pay for an AI call on a trade we can't take."""
     r = cfg["risk"]
     if any(p["symbol"] == inst.symbol for p in open_positions):
-        return "already have a position on this instrument"
+        return "already have a position on this symbol"
     if len(open_positions) >= r["max_open_positions"]:
         return f"max {r['max_open_positions']} open positions"
     if inst.asset_class == "forex":
@@ -106,7 +135,7 @@ def portfolio_check(inst: Instrument, cfg: dict, open_positions: list[dict]) -> 
 
 def account_limit_status(cfg: dict, equity: float, peak: float, day_start: float,
                          week_start: float) -> tuple[str, str] | None:
-    """Return (new_status, reason) if a loss limit has been hit."""
+    """Return (new_status, reason) if a loss limit or the daily profit target has been hit."""
     r = cfg["risk"]
     if peak > 0 and (peak - equity) / peak * 100 >= r["kill_switch_drawdown_pct"]:
         return "halted", f"kill switch: equity {equity:.2f} is {100 * (peak - equity) / peak:.1f}% below peak {peak:.2f}"
@@ -114,4 +143,7 @@ def account_limit_status(cfg: dict, equity: float, peak: float, day_start: float
         return "paused_weekly", f"weekly loss limit: {100 * (week_start - equity) / week_start:.1f}%"
     if day_start > 0 and (day_start - equity) / day_start * 100 >= r["daily_loss_limit_pct"]:
         return "paused_daily", f"daily loss limit: {100 * (day_start - equity) / day_start:.1f}%"
+    target = r.get("daily_profit_target_pct", 0)
+    if target and day_start > 0 and (equity - day_start) / day_start * 100 >= target:
+        return "target_hit", f"daily profit target reached: +{100 * (equity - day_start) / day_start:.1f}%"
     return None
