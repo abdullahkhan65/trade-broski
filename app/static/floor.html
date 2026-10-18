@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading Floor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/terminal.css">
+<script src="/static/common.js"></script>
+<style>
+  body { overflow: auto; }
+  .page { padding: 6px 10px 24px; max-width: 1800px; margin: 0 auto; }
+  .topbar { height: 46px; }
+  .intro { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 6px 4px 12px; color: var(--muted); max-width: 1100px; }
+  .floor { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; align-items: start; }
+  .trader { background: var(--panel); border-radius: var(--radius); padding: 14px; min-width: 0; }
+  .trader h3 { margin: 0; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .trader .eq { font-family: var(--mono); font-size: 20px; margin: 6px 0 2px; }
+  .trader .sub { color: var(--faint); font-size: 11.5px; }
+  .h { font-size: 11.5px; font-weight: 600; color: var(--muted); margin: 16px 0 6px; display: flex; align-items: center; gap: 6px; }
+  .finding { display: grid; grid-template-columns: 10px 1fr; gap: 8px; padding: 5px 0; font-size: 12px; }
+  .finding .lv { width: 7px; height: 7px; border-radius: 50%; margin-top: 6px; }
+  .lv.green { background: var(--up); } .lv.amber { background: var(--warn); } .lv.red { background: var(--down); }
+  .finding b { font-weight: 500; color: var(--muted); }
+  .funnel { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; text-align: center; }
+  .funnel div { background: var(--panel-2); border-radius: 8px; padding: 6px 2px; }
+  .funnel .n { font-family: var(--mono); font-size: 15px; }
+  .funnel .k { color: var(--faint); font-size: 10.5px; }
+  .why { color: var(--faint); font-size: 11.5px; margin-top: 6px; line-height: 1.6; }
+  .log { max-height: 320px; overflow: auto; border-radius: 8px; background: var(--panel-2); }
+  .log .row { padding: 6px 10px; border-bottom: 1px solid var(--grid); font-size: 12px; }
+  .log .row:last-child { border-bottom: 0; }
+  .log .top { display: flex; gap: 6px; align-items: center; }
+  .log .t { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .log .res { color: var(--muted); font-size: 11.5px; margin-top: 1px; }
+  .log .res.ok { color: var(--up); }
+  .pm { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+  .pm .top { display: flex; gap: 6px; align-items: center; color: var(--text); margin-bottom: 3px; }
+  .tr { display: flex; gap: 6px; align-items: center; font-size: 12px; padding: 3px 0; }
+  .tr .r { margin-left: auto; font-family: var(--mono); }
+  .none { color: var(--faint); font-size: 12px; padding: 4px 0; }
+  .days { display: flex; gap: 4px; flex-wrap: wrap; }
+  .days span { font-family: var(--mono); font-size: 10.5px; padding: 2px 6px; border-radius: 5px; cursor: default; }
+  .days .green { background: var(--up-soft); color: var(--up); } .days .amber { background: var(--warn-soft); color: var(--warn); }
+  .days .red { background: var(--down-soft); color: var(--down); }
+  @media (max-width: 1400px) { .floor { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 760px) { .floor { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <div class="brand"><div class="logo"></div>Paper Trader</div>
+    <div class="right" style="margin-left:auto">
+      <a href="/">Terminal</a><a href="/floor" class="on">Floor</a><a href="/news">News</a><a href="/settings">Settings</a>
+    </div>
+  </header>
+  <div class="intro">
+    <span>The floor manager checks each trader's <b style="color:var(--text)">process</b>: why it did or didn't trade, whether a losing streak
+      is normal, and whether each loss was bad luck or a bad decision. Bad decisions become playbook lessons.</span>
+    <button class="small" onclick="runAudit()">Run audit now</button>
+    <span class="faint" id="updated"></span>
+  </div>
+  <div class="floor" id="floor"><div class="none">Loading…</div></div>
+</div>
+<script>
+const NAMES = { XAU_USD: "GOLD", EUR_USD: "EURUSD", GBP_USD: "GBPUSD", USD_JPY: "USDJPY", BTC_USDT: "BTCUSD", US30: "US30Cash", US100: "US100Cash" };
+const nm = (s) => NAMES[s] || s;
+const hm = (iso) => { const d = new Date(iso); return d.toISOString().slice(5, 16).replace("T", " "); };
+const side = (s) => `<span class="chip ${s === "LONG" ? "ok" : "bad"}">${s === "LONG" ? "BUY" : "SELL"}</span>`;
+
+function trader(T) {
+  const a = T.account, f = T.today.funnel;
+  const filtered = f.filtered.reduce((s, x) => s + x.n, 0), blocked = f.blocked.reduce((s, x) => s + x.n, 0);
+  const reasons = [...f.blocked, ...f.filtered].slice(0, 5).map((x) => `${esc(x.reason)} ×${x.n}`).join(" · ");
+  const findings = T.today.items.map((i) => `<div class="finding"><span class="lv ${i.level}"></span>
+      <div><b>${esc(i.area)}</b> · ${esc(i.message)}</div></div>`).join("") || '<div class="none">Nothing to report yet.</div>';
+  const log = T.decisions.length ? T.decisions.map((d) => `<div class="row"><div class="top"><span class="t">${hm(d.at)}</span>
+      <b>${nm(d.symbol)}</b>${side(d.side)}<span class="faint">${esc(d.signal)}</span></div>
+      <div class="res ${d.accepted ? "ok" : ""}">${d.accepted ? "Opened" + (d.reject_reason ? " · " + esc(d.reject_reason) : "") : "Skipped: " + esc(d.reject_reason)}</div></div>`).join("")
+    : '<div class="row none">No setups yet.</div>';
+  const trades = T.trades.length ? T.trades.map((t) => `<div class="tr"><span class="t faint mono">${hm(t.closed_at)}</span>
+      <b>${nm(t.symbol)}</b>${side(t.side)}${t.trial ? '<span class="chip">trial</span>' : ""}<span class="faint">${esc(t.exit_reason)}</span>
+      <span class="r ${cls(t.pnl_usd)}">${t.pnl_r == null ? "" : (t.pnl_r >= 0 ? "+" : "") + t.pnl_r.toFixed(2) + "R"}</span></div>`).join("")
+    : '<div class="none">No closed trades yet.</div>';
+  const pms = T.post_mortems.length ? T.post_mortems.map((p) => `<div class="pm"><div class="top">
+      <span class="chip ${p.verdict === "bad decision" ? "bad" : p.verdict === "bad luck" ? "good" : ""}">${p.verdict}</span>
+      <b>${nm(p.data.symbol)}</b><span class="faint">${esc(p.data.signal)}</span>
+      <span class="mono down" style="margin-left:auto">${(p.data.r ?? 0).toFixed(2)}R</span></div>
+      ${esc(p.data.what_happened)}${p.data.mistake ? `<div><b style="color:var(--text);font-weight:500">Mistake:</b> ${esc(p.data.mistake)}</div>` : ""}
+      ${p.data.lesson ? `<div><b style="color:var(--text);font-weight:500">Lesson:</b> ${esc(p.data.lesson)}</div>` : ""}</div>`).join("")
+    : '<div class="none">No losing trades reviewed yet.</div>';
+  const days = T.history.length ? `<div class="days">${T.history.map((r) => `<span class="${r.grade}" title="${esc(r.items.filter((i) => i.level !== "green")
+      .map((i) => i.area + ": " + i.message).join("\n") || "all green")}">${r.day.slice(5)}</span>`).join("")}</div>`
+    : '<div class="none">First daily audit runs at 00:15 UTC.</div>';
+  return `<section class="trader">
+    <h3><span class="dot ${a.status}"></span>${esc(a.label)}<span class="chip ${T.today.grade === "red" ? "bad" : T.today.grade === "amber" ? "high" : "good"}"
+      style="margin-left:auto">${T.today.grade === "green" ? "all good" : T.today.grade}</span></h3>
+    <div class="eq">${a.equity.toFixed(2)} <span class="${cls(a.pnl_today)}" style="font-size:13px">${usd(a.pnl_today, true)} today</span></div>
+    <div class="sub">${a.status.replace("_", " ")}${a.status_reason ? " · " + esc(a.status_reason) : ""}</div>
+    <div class="h">Today's audit</div>${findings}
+    <div class="h">Signal funnel today</div>
+    <div class="funnel"><div><div class="n">${f.checked}</div><div class="k">candles checked</div></div>
+      <div><div class="n">${f.signals}</div><div class="k">setups found</div></div>
+      <div><div class="n">${filtered + blocked}</div><div class="k">filtered / blocked</div></div>
+      <div><div class="n up">${f.opened}</div><div class="k">trades</div></div></div>
+    <div class="why">${reasons || "Nothing filtered or blocked today."}</div>
+    <div class="h">Decision log</div><div class="log">${log}</div>
+    <div class="h">Recent trades</div>${trades}
+    <div class="h">Post-mortems</div>${pms}
+    <div class="h">Daily audits (hover for flags)</div>${days}
+  </section>`;
+}
+
+async function load() {
+  try {
+    const rows = await api("/api/floor");
+    const html = rows.map(trader).join("");
+    const el = document.getElementById("floor");
+    if (el._html !== html) { el.innerHTML = html; el._html = html; }
+    document.getElementById("updated").textContent = "updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch (e) { document.getElementById("updated").textContent = "error: " + e.message; }
+}
+async function runAudit() {
+  await api("/api/audit/run", { method: "POST" });
+  toast("Audit started: reports and post-mortems appear in about a minute");
+  setTimeout(load, 30000);
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

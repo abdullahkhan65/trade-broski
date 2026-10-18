@@ -100,3 +100,14 @@ def test_context_text_lists_levels():
     today = [bar(DAY0 + i * M15, 100.5, 100.7, 100.3, 100.5) for i in range(36)]
     txt = smc.context_text(prev + today, 0.3, 2)
     assert "PDH 101.00" in txt and "ATR" in txt
+
+
+def test_hourly_candles_and_h1_zones_in_chart_json():
+    rows = [{"t": 3600 * 10 + k * 900, "o": 100 + k * 0.1, "h": 100.3 + k * 0.1, "l": 99.9 + k * 0.1,
+             "c": 100.2 + k * 0.1, "v": 0} for k in range(400)]
+    h1 = smc.hourly(rows)
+    assert len(h1) == 100 and h1[0]["o"] == rows[0]["o"] and h1[0]["c"] == rows[3]["c"]
+    assert h1[0]["h"] == max(r["h"] for r in rows[:4])
+    assert smc.hourly(rows[:-1])[-1]["t"] == h1[-2]["t"]          # incomplete last hour dropped
+    out = smc.to_json(rows, 0.4)
+    assert {"levels", "zones"} <= set(out) and all(z["tf"] in ("", "H1") for z in out["zones"])

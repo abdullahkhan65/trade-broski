@@ -351,7 +351,7 @@ def healthz() -> dict:
     return {"ok": True, "feeds": {k: v.connected for k, v in prices.status.items()}}
 
 
-for page in ("dashboard", "settings", "news"):
+for page in ("dashboard", "settings", "news", "floor"):
     def _make(name: str):
         def handler(_: str = Depends(auth)):
             return FileResponse(STATIC / f"{name}.html")
@@ -484,7 +484,7 @@ def api_levels(symbol: str, tf: str = "15m", _: str = Depends(auth)) -> dict:
     """SMC map for the chart: day/session levels, liquidity pools, FVGs and order blocks."""
     if symbol not in INSTRUMENTS or tf not in ("5m", "15m"):
         raise HTTPException(404)
-    candles = load_candles(db, symbol, 1200 if tf == "5m" else 600, tf)
+    candles = load_candles(db, symbol, 2400 if tf == "5m" else 800, tf)
     atr = engine.current_atr(symbol, tf)
     if not candles or not atr:
         return {"levels": [], "zones": []}
@@ -609,6 +609,35 @@ def api_audit(account: str = "standard", _: str = Depends(auth)) -> dict:
     for p in pms:
         p["data"] = json.loads(p["data"])
     return {"today": today, "history": uniq, "post_mortems": pms}
+
+
+@app.get("/api/floor")
+def api_floor(_: str = Depends(auth)) -> list[dict]:
+    """The floor manager's view: every trader side by side - today's audit, signal funnel, decision log,
+    recent trades, post-mortems and the last daily reports."""
+    now = datetime.now(timezone.utc)
+    out = []
+    for m in MODES:
+        reports, seen = [], set()
+        for r in db.all("SELECT data FROM audit_reports WHERE account=? ORDER BY id DESC LIMIT 14", (m,)):
+            rep = json.loads(r["data"])
+            if rep["day"] not in seen:
+                seen.add(rep["day"])
+                reports.append(rep)
+        pms = db.all("SELECT trade_id, at, verdict, data FROM post_mortems WHERE account=? ORDER BY id DESC LIMIT 6", (m,))
+        for p in pms:
+            p["data"] = json.loads(p["data"])
+        out.append({
+            "account": _account(m),
+            "today": audit.daily_report(db, store.current, m, now),
+            "history": reports[:7],
+            "post_mortems": pms,
+            "decisions": db.all("SELECT at, symbol, signal, side, accepted, reject_reason, signal_note FROM decisions "
+                                "WHERE account=? ORDER BY id DESC LIMIT 25", (m,)),
+            "trades": db.all("SELECT symbol, side, signal, pnl_usd, pnl_r, exit_reason, closed_at, COALESCE(trial,0) trial "
+                             "FROM trades WHERE account=? ORDER BY id DESC LIMIT 8", (m,)),
+        })
+    return out
 
 
 @app.post("/api/audit/run")

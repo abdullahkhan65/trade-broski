@@ -89,10 +89,11 @@ On first start after an upgrade from the single-account version, the old file is
 | `GET /api/stream?account=` | server-sent events every 1s: quotes, account, position profit |
 | `GET /api/candles?symbol=&tf=` | M5/M15 candles for the chart |
 | `GET /api/audit?account=` / `POST /api/audit/run` | Today's audit, the last 14 daily reports, post-mortems / run now |
+| `GET /api/floor` (page `/floor`) | All four traders side by side: today's audit and signal funnel, decision log, recent trades, post-mortems, last 7 daily grades |
 | `GET /api/research` | Proposals, Lab league table, latest research review, allowlists |
 | `POST /api/research/run` | Run the weekly research job now |
 | `POST /api/proposals/{id}/approve` or `/reject` | Decide an allowlist proposal (approve edits the account's allowlist) |
-| `GET /api/levels?symbol=&tf=` | SMC map for the chart: levels (swept or not), FVGs and order blocks |
+| `GET /api/levels?symbol=&tf=` | SMC map for the chart: levels (swept or not), FVGs and order blocks on the chart timeframe and on H1 (`tf: "H1"`) |
 | `GET /api/compare` | per-account stats: equity, trades, win rate, avg R, avg %/day, max drawdown |
 | `GET /api/equity`, `/api/trades?account=`, `/api/decisions?account=`, `/api/scorecard?account=`, `/api/playbook?mode=`, `/api/news` | data for the tabs |
 | `GET/PUT /api/settings` | schema (global + per-mode fields) and values / save (validated and clamped) |

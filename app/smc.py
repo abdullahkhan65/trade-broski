@@ -56,6 +56,7 @@ class Zone:
     bottom: float
     t: int                  # candle time where the zone starts
     touched: bool = False   # price has come back into it
+    tf: str = ""            # "H1" for zones found on hourly candles (chart only)
 
 
 def _tf_seconds(candles: list[dict]) -> int:
@@ -254,7 +255,26 @@ def context_text(candles: list[dict], atr: float, decimals: int) -> str:
     return "\n".join(lines) if lines else "no key levels found"
 
 
+def hourly(candles: list[dict]) -> list[dict]:
+    """Complete H1 candles built from M5/M15 candles."""
+    if len(candles) < 2:
+        return []
+    per_hour = 3600 // max(60, candles[-1]["t"] - candles[-2]["t"])
+    hours: dict[int, list[dict]] = {}
+    for c in candles:
+        hours.setdefault(c["t"] // 3600, []).append(c)
+    return [{"t": h * 3600, "o": rows[0]["o"], "h": max(x["h"] for x in rows), "l": min(x["l"] for x in rows),
+             "c": rows[-1]["c"], "v": 0} for h, rows in sorted(hours.items()) if len(rows) >= per_hour]
+
+
 def to_json(candles: list[dict], atr: float) -> dict:
-    """For the dashboard chart."""
-    return {"levels": [asdict(lv) for lv in key_levels(candles, atr)],
-            "zones": [asdict(z) for z in zones(candles, atr)]}
+    """For the dashboard chart: levels, chart-timeframe zones and H1 zones (bigger, more important)."""
+    out = [asdict(z) for z in zones(candles, atr)]
+    h1 = hourly(candles)
+    if len(h1) > 20:
+        trs = [max(c["h"] - c["l"], abs(c["h"] - p["c"]), abs(c["l"] - p["c"])) for p, c in zip(h1[-15:], h1[-14:])]
+        h1_atr = sum(trs) / len(trs)
+        for z in zones(h1, h1_atr):
+            z.tf = "H1"
+            out.append(asdict(z))
+    return {"levels": [asdict(lv) for lv in key_levels(candles, atr)], "zones": out}

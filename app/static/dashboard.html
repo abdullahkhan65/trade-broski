@@ -14,16 +14,16 @@
 <body>
 <div class="app" id="app">
   <header class="topbar">
-    <div class="brand"><div class="logo">📈</div>Paper Trader</div>
+    <div class="brand"><div class="logo"></div>Paper Trader</div>
     <nav class="accounts" id="accounts"></nav>
     <div class="right">
-      <a href="/news">News</a><a href="/settings">Settings</a>
+      <a href="/floor" title="All four traders: audits, decision logs, post-mortems">Floor</a><a href="/news">News</a><a href="/settings">Settings</a>
       <span class="clock" id="clock"></span>
     </div>
   </header>
 
   <aside class="card watchlist">
-    <div class="card-head"><h2>Market Watch</h2><span class="muted" id="session" style="margin-left:auto;font-size:11.5px"></span></div>
+    <div class="card-head"><h2>Markets</h2><span class="faint" id="session" style="margin-left:auto;font-size:11px"></span></div>
     <div id="warnings"></div>
     <div class="card-body" id="wl"></div>
   </aside>
@@ -46,7 +46,8 @@
 
   <section class="card bottom">
     <div class="stats" id="stats"></div>
-    <div class="tabs" id="tabs"></div>
+    <div class="bar-top"><div class="tabs" id="tabs"></div>
+      <button class="small ghost" id="expand" title="Bigger / smaller panel">⤢</button></div>
     <div class="card-body" id="tab-body"></div>
   </section>
 
@@ -133,24 +134,23 @@ function renderWatchlist(quotes) {
     if (!r) {
       const el = document.createElement("div");
       el.className = "wl-row"; el.onclick = () => selectSymbol(s);
-      el.innerHTML = `<div class="wl-left"><div class="wl-sym"><span class="n"></span><span class="chip reg"></span></div>
-          <div class="wl-sub"><span class="dot st"></span><span class="stx"></span><span class="chip risk"></span></div></div>
+      el.innerHTML = `<div class="wl-left"><div class="wl-sym"><span class="dot st"></span><span class="n"></span></div>
+          <div class="wl-sub"><span class="reg"></span><span class="risk"></span></div></div>
         <div class="wl-right wl-px"><div class="wl-bid"></div><div class="wl-sub"><span class="ask"></span><span class="spr faint"></span></div></div>`;
       wl.appendChild(el);
       r = wlRows[s] = { el, n: el.querySelector(".n"), reg: el.querySelector(".reg"), st: el.querySelector(".st"),
-        stx: el.querySelector(".stx"), risk: el.querySelector(".risk"), bid: el.querySelector(".wl-bid"),
+        risk: el.querySelector(".risk"), bid: el.querySelector(".wl-bid"),
         ask: el.querySelector(".ask"), spr: el.querySelector(".spr"), last: null };
     }
     r.el.classList.toggle("sel", s === sym);
     setText(r.n, q.xm + (q.enabled ? "" : " · off"));
     const reg = q.regime ? q.regime.split(" ")[0] : "";
-    setText(r.reg, reg); setCls(r.reg, `chip reg regime-${reg || "none"}`); r.reg.style.display = reg ? "" : "none";
-    r.reg.title = q.regime || "";
+    setText(r.reg, reg); r.reg.title = q.regime || "";
     const status = !q.open ? "closed" : q.age != null && q.age < 30 ? "live" : "stale";
-    setCls(r.st, `dot st ${status === "live" ? "" : status}`); setText(r.stx, status);
+    setCls(r.st, `dot st ${status === "live" ? "" : status}`); r.st.title = `market ${status}`;
     if (q.min_lot_risk == null) r.risk.style.display = "none";
-    else { r.risk.style.display = ""; setText(r.risk, `0.01 = ${q.min_lot_risk.toFixed(1)}%`);
-      setCls(r.risk, `chip risk ${q.min_lot_risk <= 2 ? "good" : q.min_lot_risk <= 5 ? "high" : "bad"}`);
+    else { r.risk.style.display = ""; setText(r.risk, `${reg ? "· " : ""}0.01 lot = ${q.min_lot_risk.toFixed(1)}%`);
+      setCls(r.risk, `risk ${q.min_lot_risk <= 2 ? "good" : q.min_lot_risk <= 5 ? "high" : "bad"}`);
       r.risk.title = "Risk of 0.01 lot with this account's default stop"; }
     const bidTxt = px(q.bid, q.digits);
     if (r.bid.textContent !== bidTxt) {
@@ -174,13 +174,13 @@ function makeChart() {
   chart = LightweightCharts.createChart(document.getElementById("chart"), {
     layout: { background: { color: "transparent" }, textColor: "#8790a3", fontFamily: "Inter, sans-serif" },
     grid: { vertLines: { color: "rgba(255,255,255,.03)" }, horzLines: { color: "rgba(255,255,255,.03)" } },
-    timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#232a38", rightOffset: 6 },
-    rightPriceScale: { borderColor: "#232a38" },
+    timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#1f242e", rightOffset: 6 },
+    rightPriceScale: { borderColor: "#1f242e" },
     crosshair: { mode: 0, vertLine: { color: "#3a4458", labelBackgroundColor: "#252c3c" }, horzLine: { color: "#3a4458", labelBackgroundColor: "#252c3c" } },
     autoSize: true,
   });
-  series = chart.addCandlestickSeries({ upColor: "#22ab94", downColor: "#f23645", borderVisible: false,
-    wickUpColor: "#22ab94", wickDownColor: "#f23645" });
+  series = chart.addCandlestickSeries({ upColor: "#26a69a", downColor: "#ef5350", borderVisible: false,
+    wickUpColor: "#26a69a", wickDownColor: "#ef5350" });
   chart.timeScale().subscribeVisibleLogicalRangeChange(() => drawZones());
   document.querySelectorAll("#tf-seg button").forEach((b) => (b.onclick = () => { tf = b.dataset.tf; loadChart(); }));
   document.querySelectorAll(".toggle").forEach((b) => {
@@ -188,7 +188,7 @@ function makeChart() {
     b.onclick = () => { opts[b.dataset.opt] = !opts[b.dataset.opt]; b.classList.toggle("on", opts[b.dataset.opt]);
       store.set("chartOpts", JSON.stringify(opts)); drawOverlays(); };
   });
-  setInterval(drawZones, 250);    // follows price-scale autoscaling; only moves a few divs
+  setInterval(drawZones, 300);    // follows price-scale autoscaling; touches the DOM only when a box moved
 }
 
 async function loadChart() {
@@ -231,8 +231,8 @@ function drawOverlays() {
   if (opts.positions) (state.positions || []).filter((p) => p.symbol === sym).forEach((p) => {
     const lbl = `#${p.id} ${p.side === "LONG" ? "BUY" : "SELL"} ${p.lots.toFixed(2)}`;
     posLines.push(series.createPriceLine({ price: p.entry, color: "#8790a3", lineWidth: 1, lineStyle: 0, title: lbl }));
-    posLines.push(series.createPriceLine({ price: p.stop, color: "#f23645", lineWidth: 1, lineStyle: 2, title: "SL" }));
-    posLines.push(series.createPriceLine({ price: p.target, color: "#22ab94", lineWidth: 1, lineStyle: 2, title: "TP" }));
+    posLines.push(series.createPriceLine({ price: p.stop, color: "#ef5350", lineWidth: 1, lineStyle: 2, title: "SL" }));
+    posLines.push(series.createPriceLine({ price: p.target, color: "#26a69a", lineWidth: 1, lineStyle: 2, title: "TP" }));
   });
   if (opts.levels) (state.levels || []).forEach((lv) => {
     const strong = /^(PD|equal)/.test(lv.name), session = /(Asian|London|New York)/.test(lv.name);
@@ -247,30 +247,50 @@ function drawOverlays() {
 }
 
 const zoneEls = [];
+// Which zones to draw: H1 zones (any not yet filled/broken), chart-timeframe order blocks (fresh or mitigated) and
+// fresh FVGs. Only the 3 nearest above and below price, overlapping boxes merged away - readable, not a carpet.
+function pickZones() {
+  if (!opts.zones || acc === "compare" || !lastBar) return [];
+  const p = lastBar.close;
+  const cands = zonesData.filter((z) => z.tf === "H1" || z.kind === "ob" || !z.touched)
+    .map((z) => ({ ...z, rank: (z.tf === "H1" ? 0 : 2) + (z.kind === "ob" ? 0 : 1),
+                   dist: z.bottom > p ? z.bottom - p : z.top < p ? p - z.top : 0 }));
+  const pick = (side) => {
+    const out = [];
+    cands.filter(side).sort((a, b) => a.dist - b.dist || a.rank - b.rank).forEach((z) => {
+      if (out.length >= 3) return;
+      const clash = out.find((o) => Math.min(o.top, z.top) - Math.max(o.bottom, z.bottom) > 0.5 * Math.min(o.top - o.bottom, z.top - z.bottom));
+      if (!clash) out.push(z); else if (z.rank < clash.rank) out[out.indexOf(clash)] = z;
+    });
+    return out;
+  };
+  return [...pick((z) => (z.top + z.bottom) / 2 > p), ...pick((z) => (z.top + z.bottom) / 2 <= p)];
+}
+let zoneSig = "";
 function drawZones() {
   const box = document.getElementById("zones");
-  // fresh (untouched) zones only, the 2 nearest to price above and below - touched ones are mostly spent
-  let show = [];
-  if (opts.zones && acc !== "compare" && lastBar) {
-    const p = lastBar.close, fresh = zonesData.filter((z) => !z.touched);
-    const above = fresh.filter((z) => z.bottom > p).sort((a, b) => a.bottom - b.bottom).slice(0, 2);
-    const below = fresh.filter((z) => z.top <= p).sort((a, b) => b.top - a.top).slice(0, 2);
-    show = [...above, ...below];
-  }
+  const show = pickZones();
   const width = box.clientWidth - chart.priceScale("right").width();
-  show.forEach((z, i) => {
-    let el = zoneEls[i];
-    if (!el) { el = document.createElement("div"); el.innerHTML = "<span></span>"; box.appendChild(el); zoneEls[i] = el; }
+  const geo = show.map((z) => {
     const yTop = series.priceToCoordinate(z.top), yBot = series.priceToCoordinate(z.bottom);
     let x = chart.timeScale().timeToCoordinate(z.t);
     if (x == null) { const r = chart.timeScale().getVisibleRange(); x = r && z.t < r.from ? 0 : null; }
-    if (yTop == null || yBot == null || x == null) { el.style.display = "none"; return; }
-    setCls(el, `zone ${z.kind} ${z.side}`);
-    el.style.display = ""; el.style.left = `${Math.max(0, x)}px`; el.style.width = `${Math.max(0, width - Math.max(0, x))}px`;
-    el.style.top = `${Math.min(yTop, yBot)}px`; el.style.height = `${Math.max(2, Math.abs(yBot - yTop))}px`;
-    setText(el.firstChild, Math.abs(yBot - yTop) >= 12 ? (z.kind === "fvg" ? "FVG" : "OB") : "");
+    return yTop == null || yBot == null || x == null ? null : { z, x: Math.max(0, x), y: Math.min(yTop, yBot), h: Math.abs(yBot - yTop) };
   });
-  for (let i = show.length; i < zoneEls.length; i++) zoneEls[i].style.display = "none";
+  const sig = width + "|" + geo.map((g) => g ? `${g.z.t}${g.z.kind}${g.z.tf}${Math.round(g.x)},${Math.round(g.y)},${Math.round(g.h)},${g.z.touched}` : "-").join("|");
+  if (sig === zoneSig) return;              // nothing moved: don't touch the DOM
+  zoneSig = sig;
+  geo.forEach((g, i) => {
+    let el = zoneEls[i];
+    if (!el) { el = document.createElement("div"); el.innerHTML = "<span></span>"; box.appendChild(el); zoneEls[i] = el; }
+    if (!g) { el.style.display = "none"; return; }
+    const z = g.z, thin = g.h < 15;
+    setCls(el, `zone ${z.kind} ${z.side}${z.tf ? " htf" : ""}${z.touched ? " used" : ""}${thin ? " thin" : ""}`);
+    el.style.display = ""; el.style.left = `${g.x}px`; el.style.width = `${Math.max(0, width - g.x)}px`;
+    el.style.top = `${g.y}px`; el.style.height = `${Math.max(3, g.h)}px`;
+    setText(el.firstChild, `${z.tf ? z.tf + " " : ""}${z.side === "bull" ? "Bullish" : "Bearish"} ${z.kind === "ob" ? "order block" : "FVG"}${z.touched ? " · tested" : ""}`);
+  });
+  for (let i = geo.length; i < zoneEls.length; i++) zoneEls[i].style.display = "none";
 }
 
 // ------------------------------------------------------------- account stats strip
@@ -289,9 +309,8 @@ function renderStats(a) {
 }
 
 // ----------------------------------------------------------------- tabs
-const TABS = [["trade", "Positions"], ["history", "History"], ["journal", "Journal"], ["scorecard", "Scorecard"],
-              ["learning", "Learning"], ["audit", "Audit"], ["research", "Research"], ["playbook", "Playbook"], ["ai", "AI & budget"],
-              ["controls", "Account"]];
+const TABS = [["trade", "Positions"], ["history", "History"], ["journal", "Journal"], ["audit", "Audit"],
+              ["learning", "Performance"], ["research", "Research"], ["ai", "AI"], ["controls", "Account"]];
 
 function renderTabsBar() {
   const el = document.getElementById("tabs");
@@ -306,8 +325,10 @@ function renderTabsBar() {
 async function renderTab() {
   renderTabsBar();
   const body = document.getElementById("tab-body");
-  const views = { trade: async () => tradeTable(), history: historyTable, journal: journalTable, scorecard: scorecardTable,
-                  playbook: playbookView, learning: learningView, audit: auditView, research: researchView, ai: async () => aiView(),
+  const views = { trade: async () => tradeTable(), history: historyTable, journal: journalTable,
+                  learning: async () => `<div class="pad" style="padding-bottom:0"><div class="section-title" style="margin-top:0">Scorecard</div></div>` +
+                    (await scorecardTable()) + (await learningView()),
+                  audit: auditView, research: researchView, ai: async () => (await playbookView()) + aiView(),
                   controls: async () => controlsView() };
   const t = tab, a = acc;
   const html = await (views[t] || views.trade)();
@@ -618,7 +639,7 @@ async function loadCompare() {
   if (cmpChart) cmpChart.remove();
   cmpChart = LightweightCharts.createChart(el, { layout: { background: { color: "transparent" }, textColor: "#8790a3", fontFamily: "Inter, sans-serif" },
     grid: { vertLines: { color: "rgba(255,255,255,.03)" }, horzLines: { color: "rgba(255,255,255,.03)" } },
-    timeScale: { timeVisible: true, borderColor: "#232a38" }, rightPriceScale: { borderColor: "#232a38" }, autoSize: true });
+    timeScale: { timeVisible: true, borderColor: "#1f242e" }, rightPriceScale: { borderColor: "#1f242e" }, autoSize: true });
   const colors = { standard: "#3b82f6", moderate: "#a78bfa", aggressive: "#f59e0b", lab: "#64748b" };
   const t = (iso) => Math.floor(new Date(iso).getTime() / 1000);
   for (const m of MODES) {
@@ -634,9 +655,13 @@ async function loadCompare() {
 }
 
 // ------------------------------------------------------------------ start
+if (!TABS.some(([k]) => k === tab)) tab = "trade";
+const app = document.getElementById("app");
+app.classList.toggle("tall", store.get("tall", "0") === "1");
+document.getElementById("expand").onclick = () => { app.classList.toggle("tall"); store.set("tall", app.classList.contains("tall") ? "1" : "0"); };
 makeChart();
 selectAccount([...MODES, "compare"].includes(acc) ? acc : "standard");
-setInterval(() => { if (acc !== "compare") { loadState(); if (["journal", "scorecard", "ai", "learning", "history", "research", "audit"].includes(tab)) renderTab(); } }, 30000);
+setInterval(() => { if (acc !== "compare") { loadState(); if (["journal", "ai", "learning", "history", "research", "audit"].includes(tab)) renderTab(); } }, 30000);
 setInterval(() => refreshCandles().catch(() => {}), 60000);
 setInterval(() => { if (acc === "compare") loadCompare(); }, 60000);
 </script>
