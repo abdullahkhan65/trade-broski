@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from . import adaptive, risk, scorecard, smc
 from .ai import gate
 from .ai.client import AIClient
+from .ai import coach
 from .ai.review import current_playbook
 from .alerts import Telegram
 from .broker import PaperBroker
@@ -492,7 +493,7 @@ class Engine:
                 positions,
                 self.db.all("SELECT * FROM trades WHERE account=? ORDER BY id DESC LIMIT 10", (account,)),
                 scorecard.line_for(self.db, account, sig.symbol, sig.type),
-                current_playbook(self.db, account),
+                coach.gate_text(self.db, account),
                 self._news_context(cfg, inst, now),
                 session_name(now),
                 round((ask - bid) / inst.point),

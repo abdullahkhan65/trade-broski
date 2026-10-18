@@ -112,15 +112,18 @@ async def daily_review(ai: AIClient, db: DB, cfg: dict, mode: str, day: datetime
     return f"<b>[{label}] review {d0}</b>\n{res.data['summary']}\n" + "\n".join(f"• {l}" for l in res.data["lessons"][:5])
 
 
-async def weekly_playbook(ai: AIClient, db: DB, cfg: dict, mode: str, scorecard_text: str) -> str:
+async def weekly_playbook(ai: AIClient, db: DB, cfg: dict, mode: str, scorecard_text: str,
+                          active: list[str] | None = None) -> str:
     since = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
     lessons = [r["lesson"] for r in db.all("SELECT lesson FROM lessons WHERE mode=? AND day >= ? ORDER BY id",
                                            (mode, since))]
     label = MODE_LABELS[mode]
     if not lessons:
         return f"[{label}] playbook: no lessons this week, unchanged."
-    user = (f"{_style(mode)}\n\nCURRENT PLAYBOOK:\n{current_playbook(db, mode)}\n\nTHIS WEEK'S LESSONS:\n" +
-            "\n".join(f"- {l}" for l in lessons[:30]) + f"\n\nSCORECARD:\n{scorecard_text}")
+    # the curated active list (coach.curate_lessons) first - it is the cleaned-up version of the raw lessons
+    user = (f"{_style(mode)}\n\nCURRENT PLAYBOOK:\n{current_playbook(db, mode)}\n\n" +
+            ("CURATED ACTIVE LESSONS:\n" + "\n".join(f"- {l}" for l in active) + "\n\n" if active else "") +
+            "THIS WEEK'S RAW LESSONS:\n" + "\n".join(f"- {l}" for l in lessons[:30]) + f"\n\nSCORECARD:\n{scorecard_text}")
     # Sonnet writes the playbook (3 calls a week, the rules every gate call reads);
     # Haiku is the fallback when Sonnet is off or over its budget.
     source = "weekly_sonnet"

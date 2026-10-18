@@ -229,4 +229,6 @@ def telegram_text(reports: list[dict]) -> str:
         for i in r["items"]:
             if i["level"] != "green" or i["area"] == "activity":
                 lines.append(f"  {icon[i['level']]} {i['area']}: {i['message']}")
+        if r.get("coach") and r["coach"].get("focus"):
+            lines.append(f"  🎯 focus: {r['coach']['focus']}")
     return "\n".join(lines)

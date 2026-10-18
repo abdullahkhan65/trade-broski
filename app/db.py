@@ -269,6 +269,24 @@ CREATE TABLE IF NOT EXISTS post_mortems (
     data TEXT NOT NULL                          -- JSON from the AI
 );
 
+CREATE TABLE IF NOT EXISTS coach_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account TEXT NOT NULL,
+    kind TEXT NOT NULL,                         -- missed (skipped winner, ref = decision id) | winner (ref = trade id)
+    ref_id INTEGER NOT NULL,
+    at TEXT NOT NULL,
+    verdict TEXT NOT NULL,                      -- fair skip | too cautious | good process | lucky | unclear
+    data TEXT NOT NULL,
+    UNIQUE (kind, ref_id)
+);
+
+CREATE TABLE IF NOT EXISTS lesson_sets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,       -- weekly curated active lessons per account (latest wins)
+    account TEXT NOT NULL,
+    at TEXT NOT NULL,
+    data TEXT NOT NULL                          -- JSON: lessons, dropped, model
+);
+
 CREATE TABLE IF NOT EXISTS kv (
     k TEXT PRIMARY KEY,
     v TEXT
@@ -389,7 +407,8 @@ class DB:
     def reset_account(self, acc: str, starting_balance: float) -> None:
         """Wipe one paper account back to its starting balance (history of that account removed)."""
         for table in ("positions", "trades", "decisions", "equity_snapshots", "disabled_signals",
-                      "strategy_state", "tuning_runs", "audit_counters", "audit_reports", "post_mortems"):
+                      "strategy_state", "tuning_runs", "audit_counters", "audit_reports", "post_mortems",
+                      "coach_reviews", "lesson_sets"):
             self.execute(f"DELETE FROM {table} WHERE account=?", (acc,))
         self.execute("DELETE FROM accounts WHERE id=?", (acc,))
         self.execute("DELETE FROM kv WHERE k LIKE ?", (f"%:{acc}",))

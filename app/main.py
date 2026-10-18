@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from . import adaptive, audit, promoter, scorecard, shadow, smc
-from .ai import postmortem, research
+from .ai import coach, postmortem, research
 from .ai.client import AIClient
 from .ai.review import current_playbook, daily_review, weekly_playbook
 from .alerts import telegram
@@ -124,10 +124,18 @@ async def job_daily() -> None:
 
 
 async def job_weekly() -> None:
-    if store.current["ai"]["weekly_playbook"]:
-        for m in store.active_modes():
-            if store.cfg(m)["ai"]["use_ai"]:
-                await telegram.send(await weekly_playbook(ai, db, store.cfg(m), m, scorecard.as_text(db, m)))
+    for m in store.active_modes():
+        cfg = store.cfg(m)
+        if not cfg["ai"]["use_ai"]:
+            continue
+        if store.current["audit"]["coaching"]:          # clean the lesson list first; the playbook rewrite reads it
+            try:
+                await telegram.send(await coach.curate_lessons(ai, db, cfg, m, scorecard.as_text(db, m)))
+            except Exception as e:  # noqa: BLE001
+                log.warning("lesson curation for %s failed: %s", m, e)
+        if store.current["ai"]["weekly_playbook"]:
+            await telegram.send(await weekly_playbook(ai, db, cfg, m, scorecard.as_text(db, m),
+                                                      coach.active_lessons(db, m)))
 
 
 async def job_backup() -> None:
@@ -269,6 +277,11 @@ async def run_audit(day: datetime | None = None) -> list[dict]:
             except Exception as e:  # noqa: BLE001
                 log.warning("post-mortems for %s failed: %s", m, e)
         rep = audit.daily_report(db, store.current, m, day)
+        if store.current["audit"].get("coaching") and cfg["ai"]["use_ai"]:
+            try:
+                rep["coach"] = (await coach.run_daily(ai, db, cfg, m, rep, day))["note"]
+            except Exception as e:  # noqa: BLE001
+                log.warning("coaching for %s failed: %s", m, e)
         audit.save_report(db, rep)
         reports.append(rep)
     await telegram.send(audit.telegram_text(reports))
@@ -608,7 +621,13 @@ def api_audit(account: str = "standard", _: str = Depends(auth)) -> dict:
     pms = db.all("SELECT trade_id, at, verdict, data FROM post_mortems WHERE account=? ORDER BY id DESC LIMIT 20", (account,))
     for p in pms:
         p["data"] = json.loads(p["data"])
-    return {"today": today, "history": uniq, "post_mortems": pms}
+    reviews = db.all("SELECT kind, at, verdict, data FROM coach_reviews WHERE account=? ORDER BY id DESC LIMIT 20", (account,))
+    for r in reviews:
+        r["data"] = json.loads(r["data"])
+    coached = next((r for r in uniq if r.get("coach")), None)
+    return {"today": today, "history": uniq, "post_mortems": pms, "reviews": reviews,
+            "coach": {"day": coached["day"], **coached["coach"]} if coached else None,
+            "lessons": coach.active_lessons(db, account)}
 
 
 @app.get("/api/floor")
@@ -627,11 +646,18 @@ def api_floor(_: str = Depends(auth)) -> list[dict]:
         pms = db.all("SELECT trade_id, at, verdict, data FROM post_mortems WHERE account=? ORDER BY id DESC LIMIT 6", (m,))
         for p in pms:
             p["data"] = json.loads(p["data"])
+        reviews = db.all("SELECT kind, at, verdict, data FROM coach_reviews WHERE account=? ORDER BY id DESC LIMIT 8", (m,))
+        for r in reviews:
+            r["data"] = json.loads(r["data"])
+        coached = next((r for r in reports if r.get("coach")), None)
         out.append({
             "account": _account(m),
             "today": audit.daily_report(db, store.current, m, now),
             "history": reports[:7],
             "post_mortems": pms,
+            "reviews": reviews,
+            "coach": {"day": coached["day"], **coached["coach"]} if coached else None,
+            "lessons": coach.active_lessons(db, m),
             "decisions": db.all("SELECT at, symbol, signal, side, accepted, reject_reason, signal_note FROM decisions "
                                 "WHERE account=? ORDER BY id DESC LIMIT 25", (m,)),
             "trades": db.all("SELECT symbol, side, signal, pnl_usd, pnl_r, exit_reason, closed_at, COALESCE(trial,0) trial "

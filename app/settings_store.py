@@ -223,7 +223,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "engine": {"stop_check_seconds": 3},
     "research": {"enabled": True, "min_lab_trades": 10, "min_lab_avg_r": 0.05, "ai_review": True},
-    "audit": {"enabled": True, "post_mortems": True},
+    "audit": {"enabled": True, "post_mortems": True, "coaching": True},
     "modes": copy.deepcopy(MODE_DEFAULTS),
 }
 
@@ -310,6 +310,11 @@ FIELDS: list[Field] = [
                "are live results inside the backtest's range, engine/AI/price health, exploration budget."),
     Field("audit.post_mortems", "Post-mortem every losing trade (Haiku)", "Audit", "bool",
           help="Bad luck or bad decision? Only bad-decision lessons go into the playbook. ~$0.0005 per trade."),
+    Field("audit.coaching", "Coaching: review skipped winners and winning trades, daily note, weekly lesson clean-up",
+          "Audit", "bool",
+          help="Skipped trades that would have won: fair skip or too cautious? Winners: good process or lucky? "
+               "A daily coaching note per trader, and every Sunday Sonnet keeps the 10 best lessons, which the AI "
+               "reads before every trade. ~$0.30-0.50 a month."),
     Field("research.enabled", "Weekly Lab -> allowlist research", "Research (weekly)", "bool",
           help="Sunday 04:00 UTC: Lab pairs doing well are re-tested on 2 years of history; ones that win in both "
                "years are PROPOSED for an account's allowlist. Losing allowlisted pairs are proposed for removal. "

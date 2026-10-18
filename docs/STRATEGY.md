@@ -105,6 +105,10 @@ Gold on M15 (ATR ~$8 → stop $12): 0.01 lot already risks $12 = 4.8%. Standard 
 | **Exploration budget** | every signal | trial trades on promising unproven setups (min lot, ≤0.6–1% risk, weekly loss cap 1/2/3%) | daily activity and evidence in the real accounts; winning trials become allowlist candidates | none |
 | **Daily audit (floor manager)** | 00:15 UTC | signal funnel, losing-streak statistics, live-vs-backtest drift, engine/AI/price health | an Audit tab report card + Telegram; findings feed the weekly review | none |
 | **Post-mortems** | 00:15 UTC | each losing trade (Haiku): bad luck or bad decision? | bad-decision lessons go into the playbook | ~$0.002/day |
+| **Skipped-winner reviews** | 00:15 UTC | each AI skip (Haiku/Sonnet veto, not rule filters) that would have hit target, max 3/day: fair skip or too cautious? judged on what was visible then | too-cautious lessons ("take X when...") | ~$0.0015/day |
+| **Winner reviews** | 00:15 UTC | winning trades (≥0.5R), max 2/day: good process or lucky? | what to repeat / the flaw to avoid | ~$0.001/day |
+| **Coaching note** | 00:15 UTC | per trader (Haiku): did well, fix, focus for today - from the audit and all reviews | Floor page, Audit tab, Telegram | ~$0.0004/day |
+| **Lesson curation** | Sun 12:00 UTC | Sonnet (Haiku fallback): all raw lessons -> max 10 active ones; duplicates merged, contradicted ones dropped | the AI gate reads the active lessons before every trade; the playbook rewrite starts from them | ~$0.06/week |
 | **Weekly research review** | Sunday, after the research job | all of the above (Sonnet) | nothing: a written review with recommendations (Research tab + Telegram) | ~$0.05/week |
 
 ### Market regimes

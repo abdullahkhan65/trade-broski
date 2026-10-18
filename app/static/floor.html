@@ -41,6 +41,9 @@
   .tr { display: flex; gap: 6px; align-items: center; font-size: 12px; padding: 3px 0; }
   .tr .r { margin-left: auto; font-family: var(--mono); }
   .none { color: var(--faint); font-size: 12px; padding: 4px 0; }
+  .coach { background: var(--accent-soft); border-radius: 8px; padding: 9px 11px; font-size: 12px; color: var(--muted); }
+  .coach div { margin: 2px 0; } .coach b { color: var(--text); font-weight: 500; }
+  .lessons { margin: 0; padding-left: 16px; font-size: 12px; color: var(--muted); } .lessons li { margin: 3px 0; }
   .days { display: flex; gap: 4px; flex-wrap: wrap; }
   .days span { font-family: var(--mono); font-size: 10.5px; padding: 2px 6px; border-radius: 5px; cursor: default; }
   .days .green { background: var(--up-soft); color: var(--up); } .days .amber { background: var(--warn-soft); color: var(--warn); }
@@ -59,7 +62,8 @@
   </header>
   <div class="intro">
     <span>The floor manager checks each trader's <b style="color:var(--text)">process</b>: why it did or didn't trade, whether a losing streak
-      is normal, and whether each loss was bad luck or a bad decision. Bad decisions become playbook lessons.</span>
+      is normal, whether each loss was bad luck or a bad decision, whether skipped winners were fair skips or too cautious,
+      and whether wins came from good process or luck. Every Sunday the best lessons are kept and read before every trade.</span>
     <button class="small" onclick="runAudit()">Run audit now</button>
     <span class="faint" id="updated"></span>
   </div>
@@ -92,6 +96,20 @@ function trader(T) {
       ${esc(p.data.what_happened)}${p.data.mistake ? `<div><b style="color:var(--text);font-weight:500">Mistake:</b> ${esc(p.data.mistake)}</div>` : ""}
       ${p.data.lesson ? `<div><b style="color:var(--text);font-weight:500">Lesson:</b> ${esc(p.data.lesson)}</div>` : ""}</div>`).join("")
     : '<div class="none">No losing trades reviewed yet.</div>';
+  const vc = { "too cautious": "high", "fair skip": "good", "good process": "good", "lucky": "high" };
+  const reviews = T.reviews.length ? T.reviews.map((r) => `<div class="pm"><div class="top">
+      <span class="chip">${r.kind === "missed" ? "skipped winner" : "winner"}</span><span class="chip ${vc[r.verdict] || ""}">${r.verdict}</span>
+      <b>${nm(r.data.symbol)}</b><span class="faint">${esc(r.data.signal)}</span>
+      <span class="mono up" style="margin-left:auto">${r.data.r == null ? "" : "+" + r.data.r.toFixed(2) + "R"}</span></div>
+      ${r.kind === "missed" ? `<div class="faint">Skipped because: ${esc(r.data.skip_reason)}</div>${esc(r.data.assessment)}` : esc(r.data.what_worked)}
+      ${r.data.lesson ? `<div><b style="color:var(--text);font-weight:500">Lesson:</b> ${esc(r.data.lesson)}</div>` : ""}</div>`).join("")
+    : '<div class="none">No skipped winners or winning trades reviewed yet.</div>';
+  const coach = T.coach ? `<div class="coach"><div class="faint">${T.coach.day}</div>
+      <div><b>Did well:</b> ${esc(T.coach.well)}</div>${T.coach.fix ? `<div><b>Fix:</b> ${esc(T.coach.fix)}</div>` : ""}
+      <div><b>Focus today:</b> ${esc(T.coach.focus)}</div></div>`
+    : '<div class="none">The first coaching note comes with the daily audit (00:15 UTC).</div>';
+  const lessons = T.lessons.length ? `<ol class="lessons">${T.lessons.map((l) => `<li>${esc(l)}</li>`).join("")}</ol>`
+    : '<div class="none">None yet - curated every Sunday from the reviews.</div>';
   const days = T.history.length ? `<div class="days">${T.history.map((r) => `<span class="${r.grade}" title="${esc(r.items.filter((i) => i.level !== "green")
       .map((i) => i.area + ": " + i.message).join("\n") || "all green")}">${r.day.slice(5)}</span>`).join("")}</div>`
     : '<div class="none">First daily audit runs at 00:15 UTC.</div>';
@@ -100,6 +118,7 @@ function trader(T) {
       style="margin-left:auto">${T.today.grade === "green" ? "all good" : T.today.grade}</span></h3>
     <div class="eq">${a.equity.toFixed(2)} <span class="${cls(a.pnl_today)}" style="font-size:13px">${usd(a.pnl_today, true)} today</span></div>
     <div class="sub">${a.status.replace("_", " ")}${a.status_reason ? " · " + esc(a.status_reason) : ""}</div>
+    <div class="h">Coach's note</div>${coach}
     <div class="h">Today's audit</div>${findings}
     <div class="h">Signal funnel today</div>
     <div class="funnel"><div><div class="n">${f.checked}</div><div class="k">candles checked</div></div>
@@ -109,7 +128,9 @@ function trader(T) {
     <div class="why">${reasons || "Nothing filtered or blocked today."}</div>
     <div class="h">Decision log</div><div class="log">${log}</div>
     <div class="h">Recent trades</div>${trades}
-    <div class="h">Post-mortems</div>${pms}
+    <div class="h">Losing trades: bad luck or bad decision?</div>${pms}
+    <div class="h">Skipped winners and winning trades</div>${reviews}
+    <div class="h">Active lessons (the AI reads these before every trade)</div>${lessons}
     <div class="h">Daily audits (hover for flags)</div>${days}
   </section>`;
 }

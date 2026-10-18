@@ -84,7 +84,7 @@ Since the only proven edge is on gold, **all three real accounts now accept gold
 - **Trading mode**: `auto` opens trades. `signals_only` logs and alerts what each account *would* do.
 - **Instruments**: GOLD, EURUSD, GBPUSD and BTCUSD are on; USDJPY is off by default (its price source, Yahoo, is the least reliable).
 - **Indicators**: EMA/RSI/ATR periods, the spike filter and the dead-market filter.
-- **Audit**: the daily floor-manager report and the post-mortem of every losing trade.
+- **Audit**: the daily floor-manager report, the post-mortem of every losing trade, and coaching (reviews of skipped winners and winning trades, a daily coaching note, weekly lesson curation).
 - **Research (weekly)**: the Lab → allowlist pipeline on/off, how many Lab trades and what average R a pair needs before it's re-tested, and the weekly Sonnet research review.
 - **AI**: on/off, max calls per day (default 120), **total** monthly budget for Haiku + Sonnet (default $6, **hard max $8**), daily review, weekly playbook.
 - **Sonnet**: on/off, its own monthly budget inside the total (default $3, hard max $5), max Sonnet calls per day (default 10), second opinion on/off and its risk threshold (default 1.5%). See ARCHITECTURE.md → "Two AI models".
