@@ -21,7 +21,7 @@ from typing import Any
 from .db import DB, iso
 
 MODES = ["standard", "moderate", "aggressive", "lab"]
-DEFAULTS_VERSION = 3          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
+DEFAULTS_VERSION = 4          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
 MODE_LABELS = {
     "standard": "Standard",
     "moderate": "Moderate",
@@ -40,7 +40,7 @@ MODE_BLURBS = {
     "lab": "Research account: takes EVERY signal from every strategy with no AI, no filters and no daily caps, "
            "so there is always activity and live data on what works. Not a strategy to copy.",
 }
-SYMBOLS = ["XAU_USD", "EUR_USD", "GBP_USD", "USD_JPY", "BTC_USDT"]
+SYMBOLS = ["XAU_USD", "EUR_USD", "GBP_USD", "USD_JPY", "BTC_USDT", "US30", "US100"]
 
 DEFAULT_FEEDS = [
     "https://www.investing.com/rss/news_1.rss",
@@ -56,7 +56,24 @@ DEFAULT_FEEDS = [
 # so all accounts run on M15. Everything else lost money after costs, so each account trades only its
 # allowlist; Moderate also trials BTC's London opening-range breakout (about flat over 2 years).
 # At $250 a 0.01 lot of gold risks ~3-5%, so every mode must accept the minimum lot on gold.
-STALL_FAST = {"stall_exit": True, "stall_min_progress": 0.35, "stall_candles": 3, "stall_range_atr": 0.8}
+STALL_FAST = {"stall_exit": True, "stall_min_progress": 0.35, "stall_candles": 3, "stall_range_atr": 0.8,
+              "partial_at_r": 0.0, "partial_fraction": 0.5, "trail_r": 0.0}
+# Exploration budget: trial trades on unproven-but-promising setups, minimum lot only, capped weekly loss.
+# Proven (2-year research, both years positive in all 3 account styles, uniform H1+SMC filters):
+PROVEN = ["XAU_USD:session_breakout", "US100:london_orb@liq+trail1", "US30:zone_retest@liq+trail1",
+          "US30:ny_orb@liq+trail1", "US30:london_orb@liq+trail1"]
+# Trials: passed with other settings or nearly passed - min lot, capped weekly loss
+TRIALS = ["US100:zone_retest@trail1.5", "US100:ny_orb@liq+trail1", "US30:session_breakout@trail1.5",
+          "BTC_USDT:london_orb", "BTC_USDT:ny_orb", "BTC_USDT:range_reversion",
+          "GBP_USD:session_breakout", "EUR_USD:range_reversion", "GBP_USD:range_reversion", "*:zone_retest"]
+
+
+def _explore(budget: float, max_risk: float, per_day: int) -> dict:
+    return {"enabled": True, "weekly_budget_pct": budget, "max_risk_pct": max_risk, "max_per_day": per_day,
+            "trials": list(TRIALS)}
+
+
+NEW_SIGNALS = {"zone_retest": True, "liquidity_targets": False, "asian_range_min_atr": 0.0, "asian_range_max_atr": 0.0}
 
 MODE_DEFAULTS: dict[str, dict[str, Any]] = {
     "standard": {
@@ -66,6 +83,7 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
             "risk_per_trade_pct": 1.0,
             "min_lot_rule": "allow", "min_lot_max_risk_pct": 5.0,
             "max_leverage_forex": 10.0, "max_leverage_metal": 20.0, "max_leverage_crypto": 5.0,
+            "max_leverage_index": 25.0,
             "max_margin_used_pct": 50.0,
             "max_open_positions": 2, "max_usd_forex_positions": 1,
             "daily_loss_limit_pct": 5.0, "weekly_loss_limit_pct": 10.0,
@@ -78,9 +96,10 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": False,
                     "range_reversion": True, "momentum_breakout": True, "session_filter": True,
                     "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
-                    "london_orb": False, "ny_orb": True, "pdh_breakout": False,
-                    "allowlist": ["XAU_USD:session_breakout"]},
+                    "london_orb": True, "ny_orb": True, "pdh_breakout": False,
+                    "allowlist": PROVEN, **NEW_SIGNALS},
         "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True, "pool_lab": True},
+        "explore": _explore(1.0, 0.6, 1),
         "ai": {"use_ai": True, "min_confidence": 0.55, "when_unavailable": "rules_only"},
         "weekend": {"mode": "close", "minutes_before_close": 30, "no_new_trades_minutes": 120},
     },
@@ -91,6 +110,7 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
             "risk_per_trade_pct": 1.5,
             "min_lot_rule": "allow", "min_lot_max_risk_pct": 6.0,
             "max_leverage_forex": 20.0, "max_leverage_metal": 25.0, "max_leverage_crypto": 5.0,
+            "max_leverage_index": 30.0,
             "max_margin_used_pct": 60.0,
             "max_open_positions": 3, "max_usd_forex_positions": 2,
             "daily_loss_limit_pct": 6.0, "weekly_loss_limit_pct": 12.0,
@@ -104,8 +124,9 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
                     "range_reversion": True, "momentum_breakout": True, "session_filter": True,
                     "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
                     "london_orb": True, "ny_orb": True, "pdh_breakout": False,
-                    "allowlist": ["XAU_USD:session_breakout", "BTC_USDT:london_orb"]},
+                    "allowlist": PROVEN, **NEW_SIGNALS},
         "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True, "pool_lab": True},
+        "explore": _explore(2.0, 0.75, 2),
         "ai": {"use_ai": True, "min_confidence": 0.5, "when_unavailable": "rules_only"},
         "weekend": {"mode": "halve", "minutes_before_close": 30, "no_new_trades_minutes": 90},
     },
@@ -116,6 +137,7 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
             "risk_per_trade_pct": 2.5,
             "min_lot_rule": "allow", "min_lot_max_risk_pct": 6.0,
             "max_leverage_forex": 30.0, "max_leverage_metal": 30.0, "max_leverage_crypto": 10.0,
+            "max_leverage_index": 40.0,
             "max_margin_used_pct": 70.0,
             "max_open_positions": 3, "max_usd_forex_positions": 2,
             "daily_loss_limit_pct": 7.0, "weekly_loss_limit_pct": 15.0,
@@ -128,9 +150,10 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": True,
                     "range_reversion": True, "momentum_breakout": True, "session_filter": True,
                     "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
-                    "london_orb": False, "ny_orb": True, "pdh_breakout": False,
-                    "allowlist": ["XAU_USD:session_breakout"]},
+                    "london_orb": True, "ny_orb": True, "pdh_breakout": False,
+                    "allowlist": PROVEN, **NEW_SIGNALS},
         "adaptive": {"enabled": True, "min_trades": 12, "auto_tune": True, "pool_lab": True},
+        "explore": _explore(3.0, 1.0, 3),
         "ai": {"use_ai": True, "min_confidence": 0.5, "when_unavailable": "rules_only"},
         "weekend": {"mode": "close", "minutes_before_close": 45, "no_new_trades_minutes": 60},
     },
@@ -144,6 +167,7 @@ MODE_DEFAULTS["lab"] = {
         "risk_per_trade_pct": 1.0,
         "min_lot_rule": "allow", "min_lot_max_risk_pct": 8.0,
         "max_leverage_forex": 50.0, "max_leverage_metal": 30.0, "max_leverage_crypto": 10.0,
+        "max_leverage_index": 50.0,
         "max_margin_used_pct": 80.0,
         "max_open_positions": 6, "max_usd_forex_positions": 3,
         "daily_loss_limit_pct": 15.0, "weekly_loss_limit_pct": 30.0,
@@ -153,19 +177,23 @@ MODE_DEFAULTS["lab"] = {
     },
     "exits": {"default_stop_atr": 1.5, "default_target_atr": 2.5, "min_stop_atr": 1.0,
               "max_stop_atr": 3.0, "min_reward_risk": 1.5, "breakeven_at_r": 1.0,
-              "stall_exit": True, "stall_min_progress": 0.5, "stall_candles": 4, "stall_range_atr": 1.0},
+              "stall_exit": True, "stall_min_progress": 0.5, "stall_candles": 4, "stall_range_atr": 1.0,
+              "partial_at_r": 0.0, "partial_fraction": 0.5, "trail_r": 0.0},
     "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": True,
                 "range_reversion": True, "momentum_breakout": True, "session_filter": True,
                 "htf_trend_filter": False, "liquidity_sweep": True, "smc_filter": False,
-                "london_orb": True, "ny_orb": True, "pdh_breakout": True, "allowlist": []},
+                "london_orb": True, "ny_orb": True, "pdh_breakout": True, "allowlist": [],
+                **NEW_SIGNALS, "zone_retest": True},
     "adaptive": {"enabled": False, "min_trades": 15, "auto_tune": False, "pool_lab": False},
+    "explore": {"enabled": False, "weekly_budget_pct": 0.0, "max_risk_pct": 0.5, "max_per_day": 0, "trials": []},
     "ai": {"use_ai": False, "min_confidence": 0.0, "when_unavailable": "rules_only"},
     "weekend": {"mode": "close", "minutes_before_close": 30, "no_new_trades_minutes": 60},
 }
 
 DEFAULTS: dict[str, Any] = {
     "trading_mode": "auto",
-    "instruments": {"XAU_USD": True, "EUR_USD": True, "GBP_USD": True, "USD_JPY": False, "BTC_USDT": True},
+    "instruments": {"XAU_USD": True, "EUR_USD": True, "GBP_USD": True, "USD_JPY": False, "BTC_USDT": True,
+                    "US30": True, "US100": True},
     "indicators": {
         "ema_fast": 20, "ema_slow": 50, "rsi_period": 14, "atr_period": 14,
         "spike_atr_mult": 3.0, "dead_market_percentile": 20.0,
@@ -181,18 +209,21 @@ DEFAULTS: dict[str, Any] = {
     },
     # XM Standard account (MT5). Spreads and swaps in POINTS, as MT5 shows them.
     "broker": {
-        "leverage_forex": 1000.0, "leverage_metal": 1000.0, "leverage_crypto": 50.0,
+        "leverage_forex": 1000.0, "leverage_metal": 1000.0, "leverage_crypto": 50.0, "leverage_index": 100.0,
         "margin_call_pct": 50.0, "stop_out_pct": 20.0,
         "spread_XAU_USD": 50, "spread_EUR_USD": 23, "spread_GBP_USD": 28,
-        "spread_USD_JPY": 18, "spread_BTC_USDT": 4000,
+        "spread_USD_JPY": 18, "spread_BTC_USDT": 4000, "spread_US30": 250, "spread_US100": 150,
         "swap_XAU_USD_long": -50.0, "swap_XAU_USD_short": 25.0,
         "swap_EUR_USD_long": -8.0, "swap_EUR_USD_short": 2.0,
         "swap_GBP_USD_long": -4.0, "swap_GBP_USD_short": -3.0,
         "swap_USD_JPY_long": 12.0, "swap_USD_JPY_short": -30.0,
         "swap_BTC_USDT_long": -4000.0, "swap_BTC_USDT_short": -2000.0,
+        "swap_US30_long": -800.0, "swap_US30_short": -300.0,
+        "swap_US100_long": -600.0, "swap_US100_short": -200.0,
     },
     "engine": {"stop_check_seconds": 3},
     "research": {"enabled": True, "min_lab_trades": 10, "min_lab_avg_r": 0.05, "ai_review": True},
+    "audit": {"enabled": True, "post_mortems": True},
     "modes": copy.deepcopy(MODE_DEFAULTS),
 }
 
@@ -210,7 +241,8 @@ class Field:
     help: str = ""
 
 
-_SYM_LABEL = {"XAU_USD": "GOLD", "EUR_USD": "EURUSD", "GBP_USD": "GBPUSD", "USD_JPY": "USDJPY", "BTC_USDT": "BTCUSD"}
+_SYM_LABEL = {"XAU_USD": "GOLD", "EUR_USD": "EURUSD", "GBP_USD": "GBPUSD", "USD_JPY": "USDJPY", "BTC_USDT": "BTCUSD",
+              "US30": "US30Cash", "US100": "US100Cash"}
 
 FIELDS: list[Field] = [
     Field("trading_mode", "Trading mode (all accounts)", "General", "choice", choices=["auto", "signals_only"],
@@ -220,7 +252,9 @@ FIELDS: list[Field] = [
       for s, lbl in [("XAU_USD", "GOLD - Binance gold perp prices"), ("EUR_USD", "EURUSD - Kraken prices"),
                      ("GBP_USD", "GBPUSD - Kraken prices"),
                      ("USD_JPY", "USDJPY - Yahoo prices, polled every 15s (less reliable)"),
-                     ("BTC_USDT", "BTCUSD - Binance prices")]],
+                     ("BTC_USDT", "BTCUSD - Binance prices"),
+                     ("US30", "US30Cash (Dow) - Yahoo futures prices, polled every 15s"),
+                     ("US100", "US100Cash (Nasdaq) - Yahoo futures prices, polled every 15s")]],
     Field("indicators.ema_fast", "Fast EMA", "Indicators (all modes)", "int", 5, 100, 1),
     Field("indicators.ema_slow", "Slow EMA", "Indicators (all modes)", "int", 10, 300, 1),
     Field("indicators.rsi_period", "RSI period", "Indicators (all modes)", "int", 2, 50, 1),
@@ -256,6 +290,8 @@ FIELDS: list[Field] = [
     Field("broker.leverage_forex", "Account leverage - forex (1:x)", "Broker: XM Standard", "float", 1, 1000, 1,
           help="Margin = notional / this. Copy from MT5 Specification -> Margin."),
     Field("broker.leverage_metal", "Leverage - GOLD (1:x)", "Broker: XM Standard", "float", 1, 1000, 1),
+    Field("broker.leverage_index", "Leverage - US30 / US100 (1:x)", "Broker: XM Standard", "float", 1, 1000, 1,
+          help="Estimate - check MT5 Specification for US30Cash / US100Cash."),
     Field("broker.leverage_crypto", "Leverage - BTCUSD (1:x)", "Broker: XM Standard", "float", 1, 1000, 1,
           help="XM limits crypto leverage; check your MT5 Specification."),
     Field("broker.margin_call_pct", "Margin call level (%)", "Broker: XM Standard", "float", 0, 200, 5),
@@ -269,6 +305,11 @@ FIELDS: list[Field] = [
             help="Copy from MT5 Specification. Negative = you pay. Defaults are estimates.")
       for s in SYMBOLS for d in ("long", "short")],
     Field("engine.stop_check_seconds", "Check stops every (sec)", "Engine", "int", 1, 60, 1),
+    Field("audit.enabled", "Daily audit (floor manager)", "Audit", "bool",
+          help="00:15 UTC: for each account - why no trades (signal funnel), is a losing streak normal or not, "
+               "are live results inside the backtest's range, engine/AI/price health, exploration budget."),
+    Field("audit.post_mortems", "Post-mortem every losing trade (Haiku)", "Audit", "bool",
+          help="Bad luck or bad decision? Only bad-decision lessons go into the playbook. ~$0.0005 per trade."),
     Field("research.enabled", "Weekly Lab -> allowlist research", "Research (weekly)", "bool",
           help="Sunday 04:00 UTC: Lab pairs doing well are re-tested on 2 years of history; ones that win in both "
                "years are PROPOSED for an account's allowlist. Losing allowlisted pairs are proposed for removal. "
@@ -291,6 +332,8 @@ MODE_FIELDS: list[Field] = [
     Field("risk.max_leverage_forex", "Max effective leverage - forex", "Risk", "float", 1, 50, 1,
           help="Notional / equity per position. XM allows far more; this is your own cap."),
     Field("risk.max_leverage_metal", "Max effective leverage - GOLD", "Risk", "float", 1, 30, 1),
+    Field("risk.max_leverage_index", "Max effective leverage - US30 / US100", "Risk", "float", 1, 50, 1,
+          help="0.1 lot of US30 is ~$5,000 notional = ~20x a $250 account."),
     Field("risk.max_leverage_crypto", "Max effective leverage - BTCUSD", "Risk", "float", 1, 10, 1),
     Field("risk.max_margin_used_pct", "Max margin used (%)", "Risk", "float", 5, 80, 5),
     Field("risk.max_open_positions", "Max open positions", "Risk", "int", 1, 6, 1),
@@ -316,6 +359,12 @@ MODE_FIELDS: list[Field] = [
     Field("exits.min_reward_risk", "Min reward : risk", "Stops & targets", "float", 0.5, 5, 0.1),
     Field("exits.breakeven_at_r", "Move stop to breakeven at +R", "Stops & targets", "float", 0, 5, 0.1,
           help="0 = off. E.g. 1.0: at +1R the stop moves to entry, so the trade can't become a loss."),
+    Field("exits.partial_at_r", "Partial take-profit at +R (0 = off)", "Stops & targets", "float", 0, 5, 0.1,
+          help="Close part of the position here and move the stop to entry. Needs 2x the minimum lot "
+               "(a 0.01 lot can't be split), so it starts working as the account grows."),
+    Field("exits.partial_fraction", "...close this share", "Stops & targets", "float", 0.1, 0.9, 0.05),
+    Field("exits.trail_r", "Trailing stop: N R behind the best price (0 = off)", "Stops & targets", "float", 0, 5, 0.1,
+          help="Once the trade is +N R, the stop follows the best price at N R behind it."),
     Field("exits.stall_exit", "Take profit when momentum stalls", "Stops & targets", "bool",
           help="Human instinct: in profit, no new high/low for N candles and price is just consolidating -> "
                "take what we have and look for the next setup."),
@@ -337,6 +386,14 @@ MODE_FIELDS: list[Field] = [
           help="First close beyond the first hour after the NY open (09:30-10:30 NY time), within 3 hours."),
     Field("signals.pdh_breakout", "Previous-day high/low breakout", "Signals", "bool",
           help="First close of the day beyond yesterday's high/low with a strong candle."),
+    Field("signals.zone_retest", "Order block / FVG retest (SMC)", "Signals", "bool",
+          help="First return into a fresh order block or fair value gap that closes back out of it. Stop beyond the zone."),
+    Field("signals.liquidity_targets", "Target the next liquidity level", "Signals", "bool",
+          help="Take-profit at the nearest untouched opposite high/low (PDH/PDL, session, equal highs/lows) at "
+               "least min reward:risk away, instead of a fixed ATR multiple."),
+    Field("signals.asian_range_min_atr", "Session breakout: min Asian range (x ATR, 0 = off)", "Signals", "float", 0, 10, 0.1),
+    Field("signals.asian_range_max_atr", "Session breakout: max Asian range (x ATR, 0 = off)", "Signals", "float", 0, 20, 0.1,
+          help="A very wide Asian range often means the day's move already happened."),
     Field("signals.allowlist", "Only these symbol:strategy pairs (one per line)", "Signals", "list",
           help="Empty = every enabled strategy on every symbol. Otherwise e.g. XAU_USD:session_breakout, "
                "BTC_USDT:*, *:ny_orb. Built from the 2-year backtest: pairs that made money in both years."),
@@ -361,6 +418,17 @@ MODE_FIELDS: list[Field] = [
     Field("adaptive.auto_tune", "Weekly self-tuning of stops/targets (tested first)", "Self-learning", "bool",
           help="Every Saturday, tries nearby stop/target/breakeven settings on recent history and applies "
                "the best ONLY if it also wins on newer data it wasn't tuned on."),
+    Field("explore.enabled", "Exploration budget (trial trades)", "Exploration", "bool",
+          help="Besides proven setups, take trial trades on promising unproven ones - minimum lot only, "
+               "with a capped weekly loss - so the account keeps learning every day."),
+    Field("explore.weekly_budget_pct", "Max trial losses per week (% of equity)", "Exploration", "float", 0, 5, 0.25,
+          help="When trial trades have lost this much since Monday, exploration pauses until next week."),
+    Field("explore.max_risk_pct", "Trial trade: skip if 0.01 lot risks more than (%)", "Exploration", "float", 0.1, 1.5, 0.05,
+          help="Trials always use the minimum lot. Gold at $250 (~4%) is too big for a trial; forex/BTC fit."),
+    Field("explore.max_per_day", "Max trial trades per day", "Exploration", "int", 0, 10, 1),
+    Field("explore.trials", "Trial setups (symbol:strategy, one per line)", "Exploration", "list",
+          help="Promising but unproven: the Lab's best and the 2-year near-misses. Trials that keep winning get "
+               "proposed for the allowlist by the weekly research job."),
     Field("ai.use_ai", "Ask Claude before trades", "AI", "bool",
           help="Off = rules only, no AI cost (the Lab account). The daily review and playbook are skipped too."),
     Field("ai.min_confidence", "Min AI confidence", "AI", "float", 0, 1, 0.05),
@@ -453,6 +521,7 @@ def cfg_for(settings: dict, mode: str) -> dict:
         "exits": m["exits"],
         "signals": {**settings["indicators"], **m["signals"]},
         "adaptive": m["adaptive"],
+        "explore": m["explore"],
         "ai": {**settings["ai"], **m["ai"]},
         "news": settings["news"],
         "weekend": m["weekend"],
@@ -499,6 +568,15 @@ class SettingsStore:
             for mode, text in SEED_PLAYBOOKS.items():
                 self.db.execute("INSERT INTO playbook_versions(mode, at, content, source) VALUES (?,?,?,?)",
                                 (mode, iso(), text, "seed-v3"))
+        if version < 4:
+            # v4: US30/US100 live; index setups on the allowlists with exit profiles; exploration budget
+            data["modes"] = copy.deepcopy(MODE_DEFAULTS)
+            for sym in ("US30", "US100"):
+                data["instruments"][sym] = True
+            from .ai.review import SEED_PLAYBOOKS
+            for mode, text in SEED_PLAYBOOKS.items():
+                self.db.execute("INSERT INTO playbook_versions(mode, at, content, source) VALUES (?,?,?,?)",
+                                (mode, iso(), text, "seed-v4"))
         self.save(data, f"upgrade:defaults-v{DEFAULTS_VERSION}")
         self.db.kv_set("settings_defaults_version", DEFAULTS_VERSION)
 

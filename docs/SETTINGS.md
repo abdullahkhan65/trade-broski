@@ -12,7 +12,8 @@ The rules come from a **2-year backtest** (Oct 2024 – Oct 2026, XM Standard co
 |---|---|---|---|
 | Style | Patient professional | Swing/day trader | Small-account scaler |
 | Timeframe | M15 | M15 | M15 |
-| Allowlist | GOLD session breakout | GOLD session breakout + **BTC London ORB (trial)** | GOLD session breakout |
+| Allowlist (proven) | GOLD session breakout · US100 London ORB · US30 London ORB · US30 NY ORB · US30 OB/FVG retest (index setups use the `liq+trail1` exit profile) | same | same |
+| Exploration (trials) | 1%/week, 1 a day, ≤0.6% risk | 2%/week, 2 a day, ≤0.75% risk | 3%/week, 3 a day, ≤1% risk |
 | Risk per trade | 1% | 1.5% | 2.5% |
 | 0.01 lot allowed up to | 5% | 6% | 6% |
 | Stop / target (× ATR) | 1.5 / 3.0 | 1.5 / 2.5 | 1.5 / 2.5 |
@@ -23,11 +24,13 @@ The rules come from a **2-year backtest** (Oct 2024 – Oct 2026, XM Standard co
 | After losses in a row | 2 → done for the day | 2 → half risk | 3 → half risk |
 | Weekly loss stop / kill switch | 10% / 25% | 12% / 30% | 15% / 35% |
 | Min AI confidence (Haiku, plus Sonnet on big trades) | 0.55 | 0.50 | 0.50 |
-| **2-year backtest from $250** | **+29%**, max drawdown 23% | **+45%** (gold), max drawdown 22% | **+27%**, max drawdown 21% |
+| **2-year backtest from $250, per market** | gold +29% · US30 +87% · US100 +22% | gold +45% · US30 +67% · US100 +27% | gold +27% · US30 +58% · US100 +23% |
 
 **Lab:** takes **every** signal from every strategy on every symbol, with no AI, no filters and no daily caps. It runs at 1% risk, allows the 0.01 lot up to 8%, and has a 50% kill switch. It's there so there's always activity and live data on every strategy. Expect it to lose money: that's what the backtest says these strategies do. Don't copy it.
 
-**Expect about 1 trade a week per real account.** That's how often the proven setup appears. Activity comes from the Lab. More real trades need new setups that pass the same 2-year test (NEXT_STEPS.md).
+**Expect about 3 proven trades a week per real account** (gold ~1, US30 ~1.7, US100 ~0.4), plus small trial trades from the exploration budget most days. Year 2 of the backtest was weaker than year 1 for gold and US30, so the audit's drift check watches them.
+
+**Exit profiles:** an allowlist entry can carry an exit profile after `@`, e.g. `US30:zone_retest@liq+trail1` = take-profit at the next liquidity level + 1R trailing stop. Profiles: `base`, `liq`, `trail1`, `trail1.5`, `partial1+trail1`, `liq+trail1`.
 
 **The daily % numbers are caps, not quotas.** When an account hits its daily profit or loss level it stops opening trades until the next UTC day.
 
@@ -62,7 +65,12 @@ Since the only proven edge is on gold, **all three real accounts now accept gold
 - **Signals**: switch trend pullback, session breakout and news momentum on or off, plus the London/NY session filter.
 - **Allowlist (symbol:strategy, one per line)**: when it isn't empty, an account only trades these pairs, e.g. `XAU_USD:session_breakout`, `BTC_USDT:*` or `*:ny_orb`. The defaults come from the 2-year backtest: only pairs that made money in both years. Empty means every enabled strategy on every symbol.
 - **London / New York opening-range breakout, previous-day high/low breakout**: the newer strategies (STRATEGY.md).
+- **Partial take-profit at +R / share / trailing stop N R behind**: bank part of a winner and let the rest run with a trailing stop. A partial close needs at least 2× the minimum lot, so at $250 (0.01 lot of gold) only the trailing stop applies; partials start working as the account grows.
+- **Order block / FVG retest**: the SMC entry: the first return into a fresh order block or fair value gap that closes back out of it, with the stop beyond the zone.
+- **Target the next liquidity level**: the take-profit goes at the nearest untouched opposite high or low (PDH/PDL, session, equal highs/lows) at least min reward:risk away, instead of a fixed ATR multiple.
+- **Session breakout: min/max Asian range**: skip a breakout when the Asian range was too tight (noise) or too wide (the move already happened).
 - **Take profit when momentum stalls** + 3 thresholds: the "human instinct" exit (STRATEGY.md §7a).
+- **Exploration budget** (per account): trial trades on setups that look promising but aren't proven yet (the Lab's best and the 2-year near-misses), so every account trades and learns most days. Trials always use the **minimum lot** and are skipped if that risks more than *max risk* (0.6% / 0.75% / 1%; gold at $250 is too big, forex/BTC fit). Once trials have lost *weekly budget* % of equity since Monday (1% / 2% / 3%), exploration pauses until next week. Trials don't use the account's daily trade count or losing-streak rules, never get a Sonnet second opinion, and show "[trial]" in History. Winning trials become allowlist candidates.
 - **Ask Claude before trades** (`ai.use_ai`): off means rules only, with no AI cost and no daily review or playbook (used by the Lab account).
 - **SMC location filter** (all modes, on): skip a signal when unswept liquidity (PDH/PDL, session highs/lows, equal highs/lows) or an opposite order block sits closer than the stop distance. See STRATEGY.md §7b.
 - **Liquidity sweep signal** (off): the SMC sweep-and-reclaim strategy, with a stop beyond the wick and a target at the next liquidity. It lost in the first backtest, so it's off until it proves itself.
@@ -76,6 +84,7 @@ Since the only proven edge is on gold, **all three real accounts now accept gold
 - **Trading mode**: `auto` opens trades. `signals_only` logs and alerts what each account *would* do.
 - **Instruments**: GOLD, EURUSD, GBPUSD and BTCUSD are on; USDJPY is off by default (its price source, Yahoo, is the least reliable).
 - **Indicators**: EMA/RSI/ATR periods, the spike filter and the dead-market filter.
+- **Audit**: the daily floor-manager report and the post-mortem of every losing trade.
 - **Research (weekly)**: the Lab → allowlist pipeline on/off, how many Lab trades and what average R a pair needs before it's re-tested, and the weekly Sonnet research review.
 - **AI**: on/off, max calls per day (default 120), **total** monthly budget for Haiku + Sonnet (default $6, **hard max $8**), daily review, weekly playbook.
 - **Sonnet**: on/off, its own monthly budget inside the total (default $3, hard max $5), max Sonnet calls per day (default 10), second opinion on/off and its risk threshold (default 1.5%). See ARCHITECTURE.md → "Two AI models".

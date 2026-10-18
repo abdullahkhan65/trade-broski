@@ -37,6 +37,8 @@ Be concrete and honest:
 - Use the skipped-signal outcomes: if a skip reason (AI veto, cost filter, SMC filter...) would have
   lost money it is protecting the account; if it would have made money it may be too strict.
 - Comment on pending allowlist proposals (approve or not, and why).
+- Act as the floor manager: go through the audit flags and post-mortems. Say which problems are real
+  (repeated, statistically unusual, or "bad decision" patterns) and which are normal variance.
 - Never recommend raising risk to chase returns; recommend changes as concrete settings where possible.
 summary: 3-5 sentences. recommendations: up to 6 short bullet points. risks: up to 3. JSON only."""
 
@@ -80,6 +82,15 @@ def build_input(db: DB, settings: dict) -> str:
     props = db.all("SELECT account, action, item, reason, status FROM proposals WHERE at >= ? ORDER BY id", (since7,))
     parts.append("## Allowlist proposals this week")
     parts += [f"- {p['action']} {p['item']} for {p['account']} ({p['status']}): {p['reason']}" for p in props] or ["- none"]
+    parts.append("## Audit flags this week (amber/red only) and post-mortems")
+    for r in db.all("SELECT account, day, data FROM audit_reports WHERE at >= ? ORDER BY id", (since7,)):
+        for i in json.loads(r["data"])["items"]:
+            if i["level"] != "green":
+                parts.append(f"- {r['day']} {r['account']} [{i['level']}] {i['area']}: {i['message']}")
+    for p in db.all("SELECT account, verdict, COUNT(*) n FROM post_mortems WHERE at >= ? GROUP BY account, verdict", (since7,)):
+        parts.append(f"- post-mortems {p['account']}: {p['verdict']} x{p['n']}")
+    for p in db.all("SELECT account, data FROM post_mortems WHERE at >= ? AND verdict='bad decision' LIMIT 8", (since7,)):
+        parts.append(f"- bad decision ({p['account']}): {json.loads(p['data']).get('mistake', '')}")
     runs = db.all("SELECT account, applied, reason FROM tuning_runs WHERE at >= ?", (since7,))
     parts += [f"- tuner {r['account']}: {'applied' if r['applied'] else 'kept'} - {r['reason']}" for r in runs]
     return "\n".join(parts)

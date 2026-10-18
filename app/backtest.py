@@ -31,7 +31,7 @@ from pathlib import Path
 
 from . import indicators as ind
 from . import risk
-from .exits import stall_exit
+from .exits import manage, stall_exit, with_profile
 from .config import ENV, ROOT
 from .feeds import build_feeds, dukascopy
 from .feeds.prices import PriceCache, tf_seconds
@@ -168,7 +168,9 @@ def simulate(inst: Instrument, candles: list[dict], signals: dict[int, object], 
             o = risk.Rejection(block) if block else risk.size_order(inst, cfg, sig.side, entry, sig.atr, equity, 0.0,
                                                                     sig.stop_atr, sig.target_atr, risk_mult=mult)
             if isinstance(o, risk.Order):
-                pos = {"o": o, "sig": sig, "t": c["t"], "stop": o.stop, "i": i}
+                pos = {"o": o, "sig": sig, "t": c["t"], "stop": o.stop, "i": i, "best": 0.0, "frac": 1.0,
+                       "realized": 0.0, "partial": False,
+                       "cfg": with_profile(cfg, sig.context.get("exit_profile") if sig.context else None)}
                 fills_today += 1
             else:
                 key = re.sub(r"[\d.]+", "N", o.reason.split(" ($")[0].split(";")[0])[:50]
@@ -194,17 +196,19 @@ def simulate(inst: Instrument, candles: list[dict], signals: dict[int, object], 
                     exit_px, reason = o.target, "target"
             if exit_px is None:
                 # "human instinct": consolidating short of the target -> take it at this candle's close
-                why = stall_exit(o.side, o.entry, o.target, candles[pos["i"]:i + 1], pos["sig"].atr, cfg)
+                why = stall_exit(o.side, o.entry, o.target, candles[pos["i"]:i + 1], pos["sig"].atr, pos["cfg"])
                 if why:
                     exit_px, reason = (c["c"] - half if long else c["c"] + half), "stall"
             if exit_px is not None:
-                gross = pnl_usd(inst, o.side, o.units, o.entry, exit_px)
+                gross = pnl_usd(inst, o.side, o.units * pos["frac"], o.entry, exit_px) + pos["realized"]
                 nights = max(0, int((c["t"] - pos["t"]) // 86400))
                 swap = quote_to_usd(inst, swap_pts[o.side] * inst.point * inst.contract_size * o.lots, exit_px) * nights
                 net = gross + swap
                 equity += net
                 if reason == "stop" and abs(pos["stop"] - o.entry) < inst.point:
                     reason = "breakeven"
+                elif reason == "stop" and (pos["stop"] - o.entry) * (1 if long else -1) > 0:
+                    reason = "trailing stop"
                 trades.append({"signal": pos["sig"].type, "regime": pos["sig"].regime, "side": o.side,
                                "lots": o.lots, "entry": o.entry, "exit": exit_px, "pnl": net,
                                "r": net / o.risk_usd, "reason": reason,
@@ -213,11 +217,15 @@ def simulate(inst: Instrument, candles: list[dict], signals: dict[int, object], 
                 closed_today.append({"pnl_usd": net, "exit_reason": reason})
                 pos = None
             else:
-                be = cfg["exits"]["breakeven_at_r"]
-                init = abs(o.entry - o.stop)
-                best = (bid_h - o.entry) if long else (o.entry - bid_l)
-                if be and init > 0 and best >= be * init:
-                    pos["stop"] = o.entry
+                pos["best"] = max(pos["best"], (bid_h - o.entry) if long else (o.entry - bid_l))
+                pos["stop"], frac = manage(o.side, o.entry, o.stop, pos["stop"], pos["best"], o.lots * pos["frac"],
+                                           inst.min_lot, pos["partial"], pos["cfg"])
+                if frac:
+                    closed = risk.floor_lots(inst, o.lots * frac) / o.lots
+                    px = o.entry + (1 if long else -1) * pos["cfg"]["exits"]["partial_at_r"] * abs(o.entry - o.stop)
+                    pos["realized"] += pnl_usd(inst, o.side, o.units * closed, o.entry, px)
+                    pos["frac"] -= closed
+                    pos["partial"] = True
         peak = max(peak, equity)
         max_dd = max(max_dd, (peak - equity) / peak if peak else 0)
         if day_start > 0:

@@ -31,6 +31,7 @@ One Python process (FastAPI + asyncio + APScheduler) and one SQLite file. There 
 | `app/main.py` | App wiring, lifespan (starts feeds and loops), scheduled jobs, HTTP Basic auth, all API routes |
 | `app/config.py` | `.env` → `ENV` (secrets, paths, `PAPER_ONLY`). No trading rules here |
 | `app/settings_store.py` | Global + per-mode rules, the 3 mode defaults, field schemas with **hard limits**, validation, versioning, `cfg_for(mode)` |
+| `app/instruments.py` (EXTRA_INSTRUMENTS) | Research-only candidate markets (silver, US30/US100/US500, GER40, UK100, WTI, EURJPY, GBPJPY, AUDUSD) with estimated specs; promoted to INSTRUMENTS with a live feed when they pass the 2-year test |
 | `app/instruments.py` | The 5 symbols as XM defines them: MT5 name, digits/point, contract size, lot limits; P&L and pip-value maths |
 | `app/sessions.py` | Market hours, London/NY sessions, Asian range, weekly close, rollover (DST-aware) |
 | `app/indicators.py` | EMA, RSI, ATR and percentile in pure Python |
@@ -51,8 +52,10 @@ One Python process (FastAPI + asyncio + APScheduler) and one SQLite file. There 
 | `app/feeds/dukascopy.py` | Free 2-year gold/forex history for backtests (minute candles aggregated to 15m) |
 | `app/backtest.py` | History download and cache; `collect_signals` (run once) + `simulate` (cheap replay) with the same signal and risk code |
 | `app/adaptive.py` | Per-account strategy × regime scores: active / cautious / off / probation, risk multiplier |
-| `app/exits.py` | The "human instinct" stall exit (shared by backtest and engine) |
+| `app/exits.py` | Trade management shared by backtest and live broker: stall exit, breakeven, partial take-profit, trailing stop |
 | `app/shadow.py` | Shadow outcomes: follows every skipped signal to stop/target/48h; summary by skip reason |
+| `app/audit.py` | The floor manager: signal funnel, losing-streak statistics, drift vs backtest, health, exploration budget; daily report |
+| `app/ai/postmortem.py` | Haiku post-mortem of each losing trade: bad luck or bad decision |
 | `app/promoter.py` | Lab league table, allowlist candidates/removals, 2-year both-years verification (`python -m app.promoter verify ...`) |
 | `app/ai/research.py` | Weekly research review by Sonnet (Haiku fallback) |
 | `app/tuner.py` | Weekly walk-forward tuning of stop/target/breakeven; runs as a separate low-priority process |
@@ -85,6 +88,7 @@ On first start after an upgrade from the single-account version, the old file is
 | `GET /api/state?account=` | that account, all accounts' summaries, its positions, Market Watch quotes (XM bid/ask/spread, 0.01-lot risk), AI budget, feeds |
 | `GET /api/stream?account=` | server-sent events every 1s: quotes, account, position profit |
 | `GET /api/candles?symbol=&tf=` | M5/M15 candles for the chart |
+| `GET /api/audit?account=` / `POST /api/audit/run` | Today's audit, the last 14 daily reports, post-mortems / run now |
 | `GET /api/research` | Proposals, Lab league table, latest research review, allowlists |
 | `POST /api/research/run` | Run the weekly research job now |
 | `POST /api/proposals/{id}/approve` or `/reject` | Decide an allowlist proposal (approve edits the account's allowlist) |

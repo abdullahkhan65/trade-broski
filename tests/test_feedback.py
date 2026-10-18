@@ -108,7 +108,7 @@ def test_apply_proposal_edits_allowlist_and_enables_strategy():
     assert "BTC_USDT:london_orb" in sig["allowlist"] and sig["london_orb"] is True
     back = promoter.apply_proposal(new, {"account": "standard", "action": "remove", "item": "BTC_USDT:london_orb"})
     assert "BTC_USDT:london_orb" not in back["modes"]["standard"]["signals"]["allowlist"]
-    assert settings["modes"]["standard"]["signals"]["allowlist"] == ["XAU_USD:session_breakout"]   # not mutated
+    assert "BTC_USDT:london_orb" not in settings["modes"]["standard"]["signals"]["allowlist"]   # not mutated
 
 
 def test_research_input_builds(db):

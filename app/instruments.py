@@ -1,4 +1,4 @@
-"""The five instruments, modelled on an XM Standard (MT5) account.
+"""The live instruments, modelled on an XM Standard (MT5) account.
 
 Each instrument has an XM symbol name, contract size (units per 1.00 lot),
 digits/point and lot limits. Spreads, swaps and margin leverage are on the
@@ -80,11 +80,48 @@ INSTRUMENTS: dict[str, Instrument] = {
         ("bitcoin", "btc", "crypto", "etf", "sec ", "stablecoin", "binance",
          "coinbase", "fed", "fomc", "liquidation", "halving", "risk-on", "risk-off"),
     ),
+    # US indices: live prices from Yahoo futures (YM=F / NQ=F, ~23h a day). Futures trade a few points
+    # away from XM's cash CFDs (basis); strategies use ranges/ATR, so that offset doesn't matter. Specs are
+    # ESTIMATES until copied from MT5 (contract size, min lot).
+    "US30": Instrument("US30", "US30Cash", "US30 (Dow Jones)", "yahoo", "YM=F", "index", "US30", "USD", 2, 1,
+                       ("USD",), ("dow", "stocks", "wall street", "fed", "earnings"), "USA30IDXUSD", 1e3,
+                       min_lot=0.1, lot_step=0.1),
+    "US100": Instrument("US100", "US100Cash", "US100 (Nasdaq)", "yahoo", "NQ=F", "index", "US100", "USD", 2, 1,
+                        ("USD",), ("nasdaq", "tech", "stocks", "fed", "earnings"), "USATECHIDXUSD", 1e3,
+                        min_lot=0.1, lot_step=0.1),
 }
 
-# Gold/forex follow real market hours (Mon-Fri) even though Binance/Kraken quote
+# RESEARCH CANDIDATES - not traded or streamed yet. Used by the 2-year research to test
+# whether our edges carry over to other XM markets. Specs (contract size, lots) are
+# ESTIMATES until copied from MT5; R-based research results don't depend on them.
+# A candidate that passes is moved into INSTRUMENTS with a live feed.
+EXTRA_INSTRUMENTS: dict[str, Instrument] = {
+    "XAG_USD": Instrument("XAG_USD", "SILVER", "SILVER (XAG/USD)", "yahoo", "SI=F", "metal", "XAG", "USD", 3, 5000,
+                          ("USD",), ("silver", "xag", "precious", "fed", "inflation"), "XAGUSD", 1e3),
+    "US500": Instrument("US500", "US500Cash", "US500 (S&P 500)", "yahoo", "ES=F", "index", "US500", "USD", 2, 1,
+                        ("USD",), ("s&p", "stocks", "wall street", "fed"), "USA500IDXUSD", 1e3,
+                        min_lot=0.1, lot_step=0.1),
+    "GER40": Instrument("GER40", "GER40Cash", "GER40 (DAX)", "yahoo", "^GDAXI", "index", "GER40", "EUR", 2, 1,
+                        ("EUR",), ("dax", "germany", "ecb", "european stocks"), "DEUIDXEUR", 1e3,
+                        min_lot=0.1, lot_step=0.1),
+    "UK100": Instrument("UK100", "UK100Cash", "UK100 (FTSE)", "yahoo", "^FTSE", "index", "UK100", "GBP", 2, 1,
+                        ("GBP",), ("ftse", "uk stocks", "boe"), "GBRIDXGBP", 1e3, min_lot=0.1, lot_step=0.1),
+    "WTI": Instrument("WTI", "OILCash", "WTI Crude Oil", "yahoo", "CL=F", "energy", "OIL", "USD", 2, 100,
+                      ("USD",), ("oil", "crude", "opec", "wti", "brent"), "LIGHTCMDUSD", 1e3),
+    "EUR_JPY": Instrument("EUR_JPY", "EURJPY", "EURJPY", "yahoo", "EURJPY=X", "forex", "EUR", "JPY", 3, 100_000,
+                          ("EUR", "JPY"), ("eur/jpy", "yen", "boj", "ecb"), "EURJPY", 1e3),
+    "GBP_JPY": Instrument("GBP_JPY", "GBPJPY", "GBPJPY", "yahoo", "GBPJPY=X", "forex", "GBP", "JPY", 3, 100_000,
+                          ("GBP", "JPY"), ("gbp/jpy", "yen", "boj", "boe"), "GBPJPY", 1e3),
+    "AUD_USD": Instrument("AUD_USD", "AUDUSD", "AUDUSD", "yahoo", "AUDUSD=X", "forex", "AUD", "USD", 5, 100_000,
+                          ("AUD", "USD"), ("aud/usd", "aussie", "rba", "china"), "AUDUSD", 1e5),
+}
+# estimated XM Standard spreads in points for the candidates (research only)
+EXTRA_SPREADS = {"XAG_USD": 30, "US30": 250, "US100": 150, "US500": 50, "GER40": 150, "UK100": 150,
+                 "WTI": 5, "EUR_JPY": 25, "GBP_JPY": 35, "AUD_USD": 18}
+
+# Gold/forex/indices/oil follow real market hours (Mon-Fri) even though some feeds quote
 # them 24/7. Weekend quotes and candles are ignored for these.
-FOREX_LIKE = {"forex", "metal"}
+FOREX_LIKE = {"forex", "metal", "index", "energy"}
 
 
 def get(symbol: str) -> Instrument:

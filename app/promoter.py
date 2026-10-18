@@ -9,6 +9,10 @@
    each - the same bar the current allowlists passed.
 4. PROPOSE "add" for the ones that pass. Separately, propose "remove" for allowlisted pairs
    that are losing in the account's own live trades (12+ trades, average below -0.1R).
+5. AI CALIBRATION: from the shadow outcomes of Haiku's skips. If what Haiku skipped would have
+   made money (25+ resolved skips, average > +0.15R), propose lowering that account's minimum AI
+   confidence by 0.05; if the account's AI-approved trades lose AND its skips would have lost too,
+   propose raising it. Bounded to 0.35-0.75.
 
 Nothing changes until you press Approve in the Learning tab. Approving edits that account's
 allowlist (saved as a settings version you can revert).
@@ -22,6 +26,7 @@ import os
 import time
 from datetime import datetime, timedelta, timezone
 
+from . import shadow
 from .db import DB, iso
 from .signals import allowed
 
@@ -74,6 +79,21 @@ def candidates(db: DB, settings: dict) -> list[dict]:
             if _recently_decided(db, mode, "add", item):
                 continue
             out.append({"account": mode, "item": item, "symbol": row["symbol"], "strategy": row["signal"], "lab": row})
+    # the account's own trial trades (exploration budget) that are working
+    since = iso(datetime.now(timezone.utc) - timedelta(days=LAB_DAYS))
+    for mode in real_modes(settings):
+        allow = settings["modes"][mode]["signals"].get("allowlist") or []
+        for row in db.all("SELECT symbol, signal, COUNT(*) AS n, SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) AS wins, "
+                          "COALESCE(SUM(pnl_r), 0) AS total_r FROM trades WHERE account=? AND trial=1 AND closed_at >= ? "
+                          "AND pnl_r IS NOT NULL GROUP BY symbol, signal", (mode, since)):
+            avg = row["total_r"] / row["n"]
+            item = f"{row['symbol']}:{row['signal']}"
+            if (row["signal"] in NOT_BACKTESTABLE or row["n"] < r["min_lab_trades"] or avg < r["min_lab_avg_r"]
+                    or not allow or allowed(allow, row["symbol"], row["signal"]) or _recently_decided(db, mode, "add", item)
+                    or any(c["account"] == mode and c["item"] == item for c in out)):
+                continue
+            out.append({"account": mode, "item": item, "symbol": row["symbol"], "strategy": row["signal"],
+                        "lab": {**row, "avg_r": round(avg, 3), "total_r": round(row["total_r"], 1), "source": "trials"}})
     out.sort(key=lambda c: c["lab"]["total_r"], reverse=True)
     return out
 
@@ -96,6 +116,43 @@ def removals(db: DB, settings: dict) -> list[dict]:
     return out
 
 
+CAL_MIN_SKIPS = 25
+CAL_STEP = 0.05
+CAL_BOUNDS = (0.35, 0.75)
+
+
+def calibrations(db: DB, settings: dict) -> list[dict]:
+    """Proposals to move ai.min_confidence, from what Haiku's skips would have done."""
+    out = []
+    since = iso(datetime.now(timezone.utc) - timedelta(days=30))
+    for mode in real_modes(settings):
+        if not settings["modes"][mode]["ai"].get("use_ai", True):
+            continue
+        cats = {c["category"]: c for c in shadow.summary(db, mode, days=30)}
+        hs = [cats[k] for k in ("Haiku skip", "Haiku low confidence") if k in cats]
+        n, total = sum(c["n"] for c in hs), sum(c["total_r"] for c in hs)
+        if n < CAL_MIN_SKIPS:
+            continue
+        cur = settings["modes"][mode]["ai"]["min_confidence"]
+        own = db.one("SELECT COUNT(*) n, COALESCE(SUM(pnl_r),0) s FROM trades WHERE account=? AND closed_at >= ? "
+                     "AND pnl_r IS NOT NULL", (mode, since))
+        new, why = None, ""
+        if total / n > 0.15 and cur - CAL_STEP >= CAL_BOUNDS[0]:
+            new = round(cur - CAL_STEP, 2)
+            why = f"Haiku's {n} skips would have made {total:+.1f}R (avg {total / n:+.2f}R): it is too strict"
+        elif total / n < -0.3 and own["n"] >= 15 and own["s"] / own["n"] < -0.1 and cur + CAL_STEP <= CAL_BOUNDS[1]:
+            new = round(cur + CAL_STEP, 2)
+            why = (f"Haiku's skips would have lost {total:+.1f}R and its approved trades are losing "
+                   f"({own['s'] / own['n']:+.2f}R avg): ask for more confidence")
+        if new is None:
+            continue
+        item = f"ai.min_confidence={new}"
+        if not _recently_decided(db, mode, "set", item):
+            out.append({"account": mode, "item": item, "reason": why,
+                        "evidence": {"skips": n, "skips_total_r": round(total, 1), "current": cur}})
+    return out
+
+
 def propose(db: DB, account: str, action: str, item: str, evidence: dict, reason: str) -> int:
     cur = db.execute("INSERT INTO proposals(at, account, action, item, evidence, reason) VALUES (?,?,?,?,?,?)",
                      (iso(), account, action, item, json.dumps(evidence), reason))
@@ -105,6 +162,14 @@ def propose(db: DB, account: str, action: str, item: str, evidence: dict, reason
 def apply_proposal(settings: dict, proposal: dict) -> dict:
     """Return new settings with the proposal applied to that account's allowlist."""
     data = copy.deepcopy(settings)
+    if proposal["action"] == "set":                    # "ai.min_confidence=0.45"
+        key, _, value = proposal["item"].partition("=")
+        node = data["modes"][proposal["account"]]
+        *path, last = key.split(".")
+        for k in path:
+            node = node[k]
+        node[last] = float(value)
+        return data
     sig = data["modes"][proposal["account"]]["signals"]
     allow = list(sig.get("allowlist") or [])
     strategy = proposal["item"].partition(":")[2]

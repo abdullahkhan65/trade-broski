@@ -23,8 +23,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import adaptive, promoter, scorecard, shadow, smc
-from .ai import research
+from . import adaptive, audit, promoter, scorecard, shadow, smc
+from .ai import postmortem, research
 from .ai.client import AIClient
 from .ai.review import current_playbook, daily_review, weekly_playbook
 from .alerts import telegram
@@ -156,6 +156,7 @@ def schedule_jobs() -> None:
                       coalesce=True)
     scheduler.add_job(job_shadow, IntervalTrigger(minutes=15), misfire_grace_time=300, coalesce=True,
                       next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2))
+    scheduler.add_job(job_audit, CronTrigger(hour=0, minute=15), misfire_grace_time=3600, coalesce=True)
     # Sunday 04:00 UTC: markets closed, before the 12:00 playbook rewrite (which then sees the proposals)
     scheduler.add_job(job_research, CronTrigger(day_of_week="sun", hour=4, minute=0), misfire_grace_time=3600,
                       coalesce=True)
@@ -243,6 +244,9 @@ async def run_research() -> dict:
                                    f"losing live: {rm['live']['n']} trades, avg {rm['live']['avg_r']:+.2f}R in "
                                    f"{rm['live']['days']} days")
             made.append(f"➖ remove {rm['item']} from {MODE_LABELS[rm['account']]} (#{pid})")
+        for cal in promoter.calibrations(db, settings):
+            pid = promoter.propose(db, cal["account"], "set", cal["item"], cal["evidence"], cal["reason"])
+            made.append(f"🎚 {cal['item']} for {MODE_LABELS[cal['account']]} (#{pid})")
         if made:
             await telegram.send("🔬 <b>New allowlist proposals</b> (approve in the Learning tab)\n" + "\n".join(made))
         if settings["research"]["ai_review"]:
@@ -250,6 +254,30 @@ async def run_research() -> dict:
     finally:
         _researching = False
     return {"started": True, "proposals": made}
+
+
+async def run_audit(day: datetime | None = None) -> list[dict]:
+    day = day or datetime.now(timezone.utc) - timedelta(days=1)
+    reports = []
+    for m in MODES:
+        if not store.current["modes"][m]["enabled"]:
+            continue
+        cfg = store.cfg(m)
+        if store.current["audit"]["post_mortems"] and cfg["ai"]["use_ai"]:
+            try:
+                await postmortem.run(ai, db, cfg, m, day)
+            except Exception as e:  # noqa: BLE001
+                log.warning("post-mortems for %s failed: %s", m, e)
+        rep = audit.daily_report(db, store.current, m, day)
+        audit.save_report(db, rep)
+        reports.append(rep)
+    await telegram.send(audit.telegram_text(reports))
+    return reports
+
+
+async def job_audit() -> None:
+    if store.current["audit"]["enabled"]:
+        await run_audit()
 
 
 async def job_research() -> None:
@@ -564,6 +592,29 @@ def api_learning(account: str = "standard", _: str = Depends(auth)) -> dict:
             "tuning": runs, "tuning_running": account in _tuning,
             "exits": {k: cfg["exits"][k] for k in ("default_stop_atr", "default_target_atr", "breakeven_at_r")},
             "adaptive": cfg["adaptive"]}
+
+
+@app.get("/api/audit")
+def api_audit(account: str = "standard", _: str = Depends(auth)) -> dict:
+    account = _acc(account)
+    rows = db.all("SELECT day, data FROM audit_reports WHERE account=? ORDER BY id DESC LIMIT 14", (account,))
+    reports = [json.loads(r["data"]) for r in rows]
+    seen, uniq = set(), []
+    for r in reports:                      # latest report per day
+        if r["day"] not in seen:
+            seen.add(r["day"])
+            uniq.append(r)
+    today = audit.daily_report(db, store.current, account, datetime.now(timezone.utc))
+    pms = db.all("SELECT trade_id, at, verdict, data FROM post_mortems WHERE account=? ORDER BY id DESC LIMIT 20", (account,))
+    for p in pms:
+        p["data"] = json.loads(p["data"])
+    return {"today": today, "history": uniq, "post_mortems": pms}
+
+
+@app.post("/api/audit/run")
+async def api_audit_run(_: str = Depends(auth)) -> dict:
+    asyncio.create_task(run_audit())
+    return {"started": True}
 
 
 @app.get("/api/research")

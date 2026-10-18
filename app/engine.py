@@ -12,6 +12,7 @@ Loops (all in one asyncio process):
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -22,8 +23,9 @@ from .ai.client import AIClient
 from .ai.review import current_playbook
 from .alerts import Telegram
 from .broker import PaperBroker
+from .audit import filter_key
 from .db import DB, iso
-from .exits import stall_exit
+from .exits import stall_exit, with_profile
 from .feeds import fetch_candles
 from .feeds.prices import PriceCache, Quote, load_candles, store_candles, tf_seconds
 from .indicators import atr as atr_series
@@ -33,6 +35,7 @@ from .news.sources import blackout, events_between, recent_headlines
 from .sessions import is_forex_like, market_open, minutes_to_weekly_close, session_name
 from .settings_store import MODE_LABELS, MODES, SettingsStore
 from .signals import Signal, detect_regime, evaluate
+from .signals import allowed as allowed_pair
 
 log = logging.getLogger("engine")
 
@@ -60,6 +63,7 @@ class Engine:
         self.last_atr: dict[tuple[str, str], tuple[int, float]] = {}  # (symbol, tf) -> (candle t, ATR)
         self.regimes: dict[tuple[str, str], str] = {}              # (symbol, tf) -> "trend (ADX 31, ...)"
         self.last_manage: dict[int, int] = {}                      # position id -> last candle checked
+        self.counters: dict[tuple[str, str, str], int] = {}       # (day, account, key) -> n, for the audit
         self._signal_lock = asyncio.Lock()
 
     def cfg(self, account: str) -> dict:
@@ -122,6 +126,7 @@ class Engine:
                 raise
             except Exception:  # noqa: BLE001
                 log.exception("fast tick failed")
+                self.count("system", "errors")
             await asyncio.sleep(self.store.current["engine"]["stop_check_seconds"])
 
     async def fast_tick(self) -> None:
@@ -163,6 +168,17 @@ class Engine:
         else:
             await self.tg.send(f"⏸ <b>[{label}] Paused</b> ({status})\n{reason}\nOpen positions keep their stops.")
 
+    def count(self, account: str, key: str, n: int = 1) -> None:
+        k = (datetime.now(timezone.utc).strftime("%Y-%m-%d"), account, key)
+        self.counters[k] = self.counters.get(k, 0) + n
+
+    def flush_counters(self) -> None:
+        """Audit counters (candles checked, filter results, errors) -> DB, once a minute."""
+        items, self.counters = self.counters, {}
+        for (day, account, key), n in items.items():
+            self.db.execute("INSERT INTO audit_counters(day, account, key, n) VALUES (?,?,?,?) "
+                            "ON CONFLICT(day, account, key) DO UPDATE SET n = n + excluded.n", (day, account, key, n))
+
     def set_status(self, account: str, status: str, reason: str | None = None) -> None:
         self.db.execute("UPDATE accounts SET status=?, status_reason=? WHERE id=?", (status, reason, account))
         log.info("[%s] status -> %s (%s)", account, status, reason)
@@ -178,6 +194,11 @@ class Engine:
                 raise
             except Exception:  # noqa: BLE001
                 log.exception("minute tick failed")
+                self.count("system", "errors")
+            try:
+                self.flush_counters()
+            except Exception:  # noqa: BLE001
+                log.exception("audit counter flush failed")
             await asyncio.sleep(max(5, 60 - (loop.time() - started)))
 
     async def minute_tick(self) -> None:
@@ -241,7 +262,8 @@ class Engine:
                 opened = int(datetime.fromisoformat(p["opened_at"]).timestamp())
                 bars = [r for r in rows if r["t"] >= opened - opened % sec]
                 atr = self.current_atr(p["symbol"], tf)
-                why = stall_exit(p["side"], p["entry"], p["target"], bars, atr or 0, cfg) if atr else None
+                why = (stall_exit(p["side"], p["entry"], p["target"], bars, atr or 0,
+                                  with_profile(cfg, p.get("exit_profile"))) if atr else None)
                 if not why:
                     continue
                 t = self.broker.close_at_market(cfg, p, why)
@@ -302,7 +324,9 @@ class Engine:
                     self.last_eval[(m, sym, tf)] = candles[-1]["t"]
                     news_bias = bias_for(self.db, sym) if cfg["news"]["enabled"] else None
                     dropped: list = []
-                    sigs, why_not = evaluate(inst, candles, cfg, now, news_bias, rejected=dropped)
+                    self.count(m, "checked")
+                    sigs, why_not = evaluate(inst, candles, self._explore_cfg(cfg), now, news_bias, rejected=dropped)
+                    self.count(m, "signals" if sigs else f"filter:{filter_key(why_not)}")
                     for sig, why in dropped:
                         sig.regime = sig.regime or ""
                         self._record(m, sig, False, why)
@@ -317,19 +341,53 @@ class Engine:
         """Adaptive layer: drop strategies that are switched off for this regime, then take the
         one with the best track record here. Probation / weak ones trade at reduced risk."""
         cfg = self.cfg(account)
+        main_allow = cfg["signals"].get("allowlist") or []
         allowed = []
         for sig in sigs:
             status, mult, why = adaptive.lookup(self.db, account, cfg, sig.type, sig.regime)
             if status == "off":
                 self._record(account, sig, False, f"adaptive: {sig.type} is off in {sig.regime} markets ({why})")
                 continue
-            allowed.append((adaptive.score(self.db, account, sig.type, sig.regime), mult, status, sig))
+            trial = bool(main_allow) and not allowed_pair(main_allow, sig.symbol, sig.type)
+            allowed.append((not trial, adaptive.score(self.db, account, sig.type, sig.regime), mult, status, sig, trial))
         if not allowed:
             return
-        allowed.sort(key=lambda x: x[0], reverse=True)
-        _, mult, status, sig = allowed[0]
+        allowed.sort(key=lambda x: (x[0], x[1]), reverse=True)      # proven setups first, then best score
+        _, _, mult, status, sig, trial = allowed[0]
         sig.context["adaptive"] = f"{status}" + (f", risk x{mult:g}" if mult < 1 else "")
-        await self.handle_signal(account, inst, sig, candles, now, risk_mult=mult)
+        await self.handle_signal(account, inst, sig, candles, now, risk_mult=mult, trial=trial)
+
+    def _explore_cfg(self, cfg: dict) -> dict:
+        """cfg used to EVALUATE signals: the allowlist plus this account's trial setups (if exploring)."""
+        ex = cfg.get("explore") or {}
+        allow = cfg["signals"].get("allowlist") or []
+        if not ex.get("enabled") or not allow or not ex.get("trials"):
+            return cfg
+        out = copy.deepcopy(cfg)
+        out["signals"]["allowlist"] = allow + [t for t in ex["trials"] if t not in allow]
+        for t in ex["trials"]:
+            strat = t.partition(":")[2].strip()
+            if strat in out["signals"] and isinstance(out["signals"][strat], bool):
+                out["signals"][strat] = True
+        return out
+
+    def _trial_block(self, account: str, cfg: dict, equity: float) -> str | None:
+        ex = cfg["explore"]
+        now = datetime.now(timezone.utc)
+        monday = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+        lost = -float(self.db.scalar("SELECT COALESCE(SUM(pnl_usd),0) FROM trades WHERE account=? AND trial=1 "
+                                     "AND closed_at >= ?", (account, monday)) or 0)
+        week0 = self.db.kv_get(f"week_start_equity:{account}", equity) or equity
+        budget = week0 * ex["weekly_budget_pct"] / 100
+        if lost >= budget:
+            return f"exploration budget used this week (trials lost ${lost:.2f} of ${budget:.2f})"
+        day = now.strftime("%Y-%m-%d")
+        n = int(self.db.scalar("SELECT COUNT(*) FROM (SELECT id FROM positions WHERE account=? AND trial=1 AND opened_at >= ? "
+                               "UNION ALL SELECT DISTINCT ticket FROM trades WHERE account=? AND trial=1 AND opened_at >= ?)",
+                               (account, day, account, day)) or 0)
+        if n >= ex["max_per_day"]:
+            return f"max {ex['max_per_day']} trial trades today"
+        return None
 
     async def learn(self, account: str) -> list[str]:
         changes = adaptive.update(self.db, account, self.cfg(account))
@@ -381,8 +439,14 @@ class Engine:
         return None
 
     async def handle_signal(self, account: str, inst: Instrument, sig: Signal, candles: list[dict],
-                            now: datetime, risk_mult: float = 1.0) -> None:
+                            now: datetime, risk_mult: float = 1.0, trial: bool = False) -> None:
         cfg = self.cfg(account)
+        if trial:
+            # trial = exploration: minimum lot only, if it fits the trial risk cap
+            cfg = copy.deepcopy(cfg)
+            cfg["risk"].update(risk_per_trade_pct=0.01, min_lot_rule="allow",
+                               min_lot_max_risk_pct=cfg["explore"]["max_risk_pct"])
+            sig.note = "[trial] " + sig.note
         positions = self.broker.positions(account)
         why = self._pre_checks(account, inst, sig, now, positions)
         if why:
@@ -390,8 +454,11 @@ class Engine:
             return
 
         st = self.broker.state(cfg, account)
-        # the mode's daily discipline: trades per day, losing streak, protect a good day
-        block, day_mult, day_note = self._day_rules(account, cfg, st.equity)
+        # the mode's daily discipline: trades per day, losing streak, protect a good day (trials: own budget)
+        if trial:
+            block, day_mult, day_note = self._trial_block(account, cfg, st.equity), 1.0, "trial"
+        else:
+            block, day_mult, day_note = self._day_rules(account, cfg, st.equity)
         if block:
             self._record(account, sig, False, block)
             return
@@ -449,7 +516,7 @@ class Engine:
             # high-stakes trade? ask Sonnet before risking it (it can veto)
             first = risk.size_order(inst, cfg, sig.side, entry, sig.atr, st.equity, st.margin_used,
                                     stop_atr, target_atr, risk_mult)
-            why_second = isinstance(first, risk.Order) and gate.needs_second_opinion(
+            why_second = not trial and isinstance(first, risk.Order) and gate.needs_second_opinion(
                 cfg, first.risk_pct, first.note.startswith("0.01 lot"), float(res.data["confidence"]))
             if why_second:
                 res2 = await gate.second_opinion(self.ai, cfg, prompt, res.data, why_second,
@@ -487,7 +554,8 @@ class Engine:
 
         note = "; ".join(x for x in (order.note, day_note) if x)
         decision_id = self._record(account, sig, True, note or None, ai_used, ai_reply)
-        self.broker.open(cfg, account, order, sig.type, reason, decision_id, sig.regime)
+        self.broker.open(cfg, account, order, sig.type, ("[trial] " if trial else "") + reason, decision_id,
+                         sig.regime, trial=trial, exit_profile=sig.context.get("exit_profile"))
         await self.tg.send(self._open_text(account, inst, order, sig, reason))
 
     def _day_rules(self, account: str, cfg: dict, equity: float) -> tuple[str | None, float, str]:
@@ -495,10 +563,11 @@ class Engine:
         # a partly-closed position has rows in both tables with the same ticket - count it once
         opened = int(self.db.scalar(
             "SELECT COUNT(*) FROM (SELECT id AS ticket FROM positions WHERE account=? AND opened_at >= ? "
-            "UNION SELECT ticket FROM trades WHERE account=? AND opened_at >= ?)",
+            "AND COALESCE(trial,0)=0 UNION SELECT ticket FROM trades WHERE account=? AND opened_at >= ? "
+            "AND COALESCE(trial,0)=0)",
             (account, day, account, day)) or 0)
         closed = self.db.all("SELECT pnl_usd, exit_reason FROM trades WHERE account=? AND closed_at >= ? "
-                             "ORDER BY closed_at DESC, id DESC", (account, day))
+                             "AND COALESCE(trial,0)=0 ORDER BY closed_at DESC, id DESC", (account, day))
         day_start = self.db.kv_get(f"day_start_equity:{account}", equity) or equity
         pnl_pct = 100 * (equity - day_start) / day_start if day_start > 0 else 0.0
         return risk.day_rules(cfg, pnl_pct, opened, risk.losses_in_row(closed))

@@ -101,6 +101,10 @@ Gold on M15 (ATR ~$8 → stop $12): 0.01 lot already risks $12 = 4.8%. Standard 
 | **Lab → allowlist research** | Sunday 04:00 UTC | the Lab's live league table, then a 2-year both-years test per candidate | **proposes** allowlist additions/removals; you approve in the Research tab | none |
 | **Daily lessons** | 00:05 UTC | the day's trades, skips **and what recent skips would have done** (Haiku) | lessons that feed the playbook | ~$0.01/day |
 | **Weekly playbook** | Sunday 12:00 UTC | the week's lessons + scorecard (Sonnet) | the rules Haiku/Sonnet read before every trade | ~$0.10/week |
+| **AI calibration** | Sunday, with the research job | what Haiku's skips would have done (30 days, 25+ resolved) | **proposes** moving that account's minimum AI confidence by 0.05 (range 0.35–0.75) | none |
+| **Exploration budget** | every signal | trial trades on promising unproven setups (min lot, ≤0.6–1% risk, weekly loss cap 1/2/3%) | daily activity and evidence in the real accounts; winning trials become allowlist candidates | none |
+| **Daily audit (floor manager)** | 00:15 UTC | signal funnel, losing-streak statistics, live-vs-backtest drift, engine/AI/price health | an Audit tab report card + Telegram; findings feed the weekly review | none |
+| **Post-mortems** | 00:15 UTC | each losing trade (Haiku): bad luck or bad decision? | bad-decision lessons go into the playbook | ~$0.002/day |
 | **Weekly research review** | Sunday, after the research job | all of the above (Sonnet) | nothing: a written review with recommendations (Research tab + Telegram) | ~$0.05/week |
 
 ### Market regimes
@@ -117,6 +121,7 @@ Every candle is labelled from ADX (trend strength) and where ATR sits in its 20-
 | `momentum_breakout` | trend, volatile | Strong candle closes beyond the 20-candle high/low, with the trend |
 | `london_orb` / `ny_orb` | any | Opening-range breakout: first close beyond the first hour of London (08:00–09:00 London) or of the New York open (09:30–10:30 NY), within 3 hours; stop at the middle of the range |
 | `pdh_breakout` | any | First close of the day beyond the previous day's high/low with a strong candle (body ≥ 0.5 ATR) |
+| `zone_retest` (SMC) | any | First return into a fresh order block or FVG that closes back out of it in the zone's direction; stop beyond the zone |
 | `liquidity_sweep` (SMC, **off by default**) | any | First sweep of PDH/PDL, a session high/low or equal highs/lows, closing back inside with a rejection wick. Stop beyond the wick, target the next opposite liquidity |
 
 ### Strategy switching (`app/adaptive.py`)
@@ -202,6 +207,15 @@ Method:
 | Final accounts from $250 | Standard +29%, Moderate +45%, Aggressive +27% (2 years, ~1 trade a week each) |
 
 Rerun it with `python -m app.backtest --mode <mode> --symbol all --days 730`. The study scripts were one-off; to repeat the full grid, ask for it to be added to `app/` as a tool.
+
+## 7d. Round 3 (18 Oct 2026): more markets, exits, SMC entries
+14 markets (gold, EURUSD, GBPUSD, BTC + silver, US30, US100, US500, GER40, UK100, WTI, EURJPY, GBPJPY, AUDUSD) × 9 strategies × 4 filters × 6 exit styles (× Asian-range filters) × 3 account styles: ~11,800 combinations, both-years rule.
+
+- **Indices carry edges:** 55 setups passed in all 3 account styles, almost all on US30, US100, GER40 and UK100: opening-range breakouts and the new **order block/FVG retest**.
+- To avoid overfitting (picking the luckiest of 24 variants per setup), the live accounts use **one filter set (H1 + SMC) and two exit profiles**: `base` for gold, `liq+trail1` for indices. Under that uniform setting, 6 of the 9 best setups stayed robust.
+- **Gold:** its original exits remain best. Trailing, partials and liquidity targets were all slightly worse. A narrow Asian-range filter looked better but left too few trades to trust.
+- **Live:** US30 and US100 (Yahoo futures feeds). UK100 and GER40 passed too, but free live data only covers their cash session (the research used ~23h data), so they stay research-only until a matching feed is found.
+- **Final pipeline at $250 (2 years, per market):** see SETTINGS.md. Every proven market is positive in all 3 accounts, but year 2 was weaker than year 1 for gold and US30.
 
 ## 8. First backtest result (honest)
 Run on 17 Oct 2026 on BTC:

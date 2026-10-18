@@ -16,6 +16,8 @@ Signals:
                     open (09:30-10:30 NY), within 3 hours. Stop at the middle of the range.
 * pdh_breakout    - first close of the day beyond the previous day's high/low with a strong
                     body (>= 0.5 ATR). Stop back inside the level.
+* zone_retest     - (SMC) first return into a fresh order block / fair value gap that closes
+                    back out of it in the zone's direction. Stop beyond the zone.
 * liquidity_sweep - (SMC) a previous-day / session high or low, or equal highs/lows, is
                     swept for the first time and the candle closes back inside with a
                     rejection wick. Stop beyond the sweep wick, target the opposite liquidity.
@@ -39,6 +41,7 @@ from datetime import datetime, timezone
 
 from . import indicators as ind
 from . import smc
+from .exits import PROFILES
 from .instruments import Instrument
 from .sessions import LONDON, NY, asian_range_bounds, in_trading_session, is_forex_like
 
@@ -176,6 +179,10 @@ def session_breakout(inst: Instrument, candles: list[dict], cfg: dict, atr: floa
     if len(asian) < 0.7 * (et - st) / _tf(cfg):   # need most of the Asian session's candles
         return None
     hi, lo = max(c["h"] for c in asian), min(c["l"] for c in asian)
+    s = cfg["signals"]
+    lo_cap, hi_cap = s.get("asian_range_min_atr", 0), s.get("asian_range_max_atr", 0)
+    if (lo_cap and hi - lo < lo_cap * atr) or (hi_cap and hi - lo > hi_cap * atr):
+        return None                        # range too tight (noise) or too wide (the move already happened)
     after = [c for c in candles if c["t"] >= et]
     if not after:
         return None
@@ -337,6 +344,42 @@ def pdh_breakout(inst: Instrument, candles: list[dict], cfg: dict, atr: float,
     return None
 
 
+ZONE_PAD_ATR = 0.2
+ZONE_MAX_DEPTH_ATR = 0.25         # wicking further through the zone than this = zone failed
+
+
+def zone_retest(inst: Instrument, candles: list[dict], cfg: dict, atr: float) -> Signal | None:
+    """First touch of a fresh OB/FVG (fresh on all candles BEFORE this one) that closes back out."""
+    if len(candles) < 30:
+        return None
+    last = candles[-1]
+    e = cfg["exits"]
+    d = inst.decimals
+    for z in reversed(smc.zones(candles[:-1], atr)):
+        if z.touched or last["t"] - z.t < 3 * _tf(cfg):
+            continue
+        if z.side == "bull":
+            ok = (last["l"] <= z.top and last["l"] >= z.bottom - ZONE_MAX_DEPTH_ATR * atr
+                  and last["c"] > z.top and last["c"] > last["o"])
+            stop = z.bottom - ZONE_PAD_ATR * atr
+            side = "LONG"
+        else:
+            ok = (last["h"] >= z.bottom and last["h"] <= z.top + ZONE_MAX_DEPTH_ATR * atr
+                  and last["c"] < z.bottom and last["c"] < last["o"])
+            stop = z.top + ZONE_PAD_ATR * atr
+            side = "SHORT"
+        if not ok:
+            continue
+        stop_atr = abs(last["c"] - stop) / atr
+        if stop_atr > e["max_stop_atr"]:
+            continue
+        name = "order block" if z.kind == "ob" else "fair value gap"
+        return Signal(inst.symbol, side, "zone_retest", last["c"], atr, last["t"],
+                      f"First retest of a fresh {z.side}ish {name} {z.bottom:.{d}f}-{z.top:.{d}f}, closed back out",
+                      {"zone": z.kind}, stop_atr=round(max(stop_atr, e["min_stop_atr"]), 2))
+    return None
+
+
 SWEEP_LEVELS = ("PDH", "PDL", "Asian", "London", "New York", "equal")
 SWEEP_MAX_DEPTH_ATR = 1.0      # deeper than this is a breakout, not a sweep
 SWEEP_CLOSE_SHARE = 0.6        # close in the top 40% (long) / bottom 40% (short) of the candle
@@ -401,13 +444,42 @@ def htf_trend(candles: list[dict], cfg: dict) -> str | None:
     return "flat"
 
 
-def allowed(allowlist: list[str], symbol: str, strategy: str) -> bool:
-    """'XAU_USD:session_breakout', 'XAU_USD:*', '*:ny_orb' or '*:*'."""
+LIQ_TARGET_MAX_ATR = 8.0
+
+
+def set_liquidity_targets(sigs: list[Signal], cfg: dict, atr: float, levels: list[smc.Level]) -> None:
+    """Target the nearest untouched opposite liquidity (PDH/PDL, session high/low, equal highs/lows,
+    swing points) that is at least min reward:risk away - instead of a fixed ATR multiple."""
+    e = cfg["exits"]
+    for sig in sigs:
+        if sig.target_atr:
+            continue                        # the strategy already chose a structural target
+        stop_atr = min(max(sig.stop_atr or e["default_stop_atr"], e["min_stop_atr"]), e["max_stop_atr"])
+        tgt = smc.liquidity_target(sig.side, sig.price, stop_atr * e["min_reward_risk"] * atr, levels)
+        if tgt and abs(tgt.price - sig.price) <= LIQ_TARGET_MAX_ATR * atr:
+            sig.target_atr = round(abs(tgt.price - sig.price) / atr, 2)
+            sig.note += f"; target {tgt.name} {tgt.price:g}"
+
+
+def _match(allowlist: list[str], symbol: str, strategy: str) -> str | None:
+    """The first matching entry ('XAU_USD:session_breakout', 'US30:zone_retest@liq+trail1',
+    'BTC_USDT:*', '*:ny_orb'), or None."""
     for item in allowlist:
-        sym, _, strat = item.partition(":")
+        pair = item.partition("@")[0]
+        sym, _, strat = pair.partition(":")
         if sym.strip() in ("*", symbol) and strat.strip() in ("*", strategy):
-            return True
-    return False
+            return item
+    return None
+
+
+def allowed(allowlist: list[str], symbol: str, strategy: str) -> bool:
+    return _match(allowlist, symbol, strategy) is not None
+
+
+def exit_profile(allowlist: list[str], symbol: str, strategy: str) -> str | None:
+    """'liq+trail1' for 'US30:zone_retest@liq+trail1' - see exits.PROFILES."""
+    item = _match(allowlist, symbol, strategy)
+    return item.partition("@")[2].strip() or None if item else None
 
 
 def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | None = None,
@@ -446,7 +518,12 @@ def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | N
         if sig:
             out.append(sig)
     levels = (smc.key_levels(candles, f.atr)
-              if (s.get("liquidity_sweep") or s.get("smc_filter") or s.get("pdh_breakout")) else [])
+              if (s.get("liquidity_sweep") or s.get("smc_filter") or s.get("pdh_breakout")
+                  or s.get("liquidity_targets")) else [])
+    if s.get("zone_retest") and "zone_retest" not in disabled:
+        sig = zone_retest(inst, candles, cfg, f.atr)
+        if sig:
+            out.append(sig)
     for kind in ("london_orb", "ny_orb"):
         if s.get(kind) and kind not in disabled:
             sig = opening_range_breakout(inst, candles, cfg, f.atr, now, kind)
@@ -462,11 +539,20 @@ def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | N
             out.append(sig)
     for sig in out:
         sig.regime = regime.name if regime else "unknown"
+    if out and s.get("liquidity_targets"):
+        set_liquidity_targets(out, cfg, f.atr, levels)
     allow = s.get("allowlist") or []
     if allow and out:
         out = [x for x in out if allowed(allow, inst.symbol, x.type)]
         if not out:
             return [], "strategy not on this account's allowlist for this symbol"
+        # per-setup exit profile (e.g. liquidity target + 1R trailing stop for the index setups)
+        for x in out:
+            prof = exit_profile(allow, inst.symbol, x.type)
+            if prof:
+                x.context["exit_profile"] = prof
+                if PROFILES.get(prof, {}).get("liquidity_target"):
+                    set_liquidity_targets([x], cfg, f.atr, levels or smc.key_levels(candles, f.atr))
     # if two signals disagree on direction, take neither
     if len({x.side for x in out}) > 1:
         return [], "conflicting signals"

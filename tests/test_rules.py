@@ -152,7 +152,9 @@ def test_upgrade_from_v2_server_adds_lab_allowlists_and_new_playbooks():
     db.execute("INSERT INTO settings_versions(at, source, data) VALUES (?,?,?)", (iso(), "ui", json.dumps(old)))
     db.kv_set("settings_defaults_version", 2)
     store = SettingsStore(db)
-    assert store.cfg("standard")["signals"]["allowlist"] == ["XAU_USD:session_breakout"]
+    assert store.cfg("standard")["signals"]["allowlist"][0] == "XAU_USD:session_breakout"
+    assert "US30:zone_retest@liq+trail1" in store.cfg("standard")["signals"]["allowlist"]
+    assert store.current["instruments"]["US30"] is True
     assert store.cfg("lab")["ai"]["use_ai"] is False
-    assert db.scalar("SELECT COUNT(*) FROM playbook_versions WHERE source='seed-v3'") == len(MODES)
-    assert db.kv_get("settings_defaults_version") == 3
+    assert db.scalar("SELECT COUNT(*) FROM playbook_versions WHERE source='seed-v4'") == len(MODES)
+    assert db.kv_get("settings_defaults_version") == 4

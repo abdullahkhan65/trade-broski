@@ -40,7 +40,7 @@ def market_open(inst: Instrument, now: datetime) -> bool:
         return True
     if not forex_open(now):
         return False
-    if inst.asset_class == "metal":
+    if inst.asset_class in ("metal", "index", "energy"):
         t = now.astimezone(NY).time()
         if time(17, 0) <= t < time(18, 0):    # gold daily maintenance break
             return False

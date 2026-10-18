@@ -19,6 +19,11 @@ ADDED_COLUMNS = [
     ("positions", "regime", "TEXT"),
     ("trades", "regime", "TEXT"),
     ("decisions", "regime", "TEXT"),
+    ("positions", "trial", "INTEGER DEFAULT 0"),   # exploration-budget trade (unproven setup, min size)
+    ("trades", "trial", "INTEGER DEFAULT 0"),
+    ("positions", "best_price", "REAL"),
+    ("positions", "exit_profile", "TEXT"),         # per-setup exit profile (exits.PROFILES)           # best price since entry (trailing stop)
+    ("positions", "partial_done", "INTEGER DEFAULT 0"),
     # shadow outcomes: the plan at decision time, and what would have happened if it had been taken
     ("decisions", "plan_entry", "REAL"),
     ("decisions", "plan_stop", "REAL"),
@@ -239,6 +244,31 @@ CREATE TABLE IF NOT EXISTS research_reviews (
     data TEXT NOT NULL                          -- JSON: {summary, recommendations, risks}
 );
 
+CREATE TABLE IF NOT EXISTS audit_counters (
+    day TEXT NOT NULL,
+    account TEXT NOT NULL,
+    key TEXT NOT NULL,                          -- checked | signals | filter:<reason> | errors ...
+    n INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, account, key)
+);
+
+CREATE TABLE IF NOT EXISTS audit_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL,
+    account TEXT NOT NULL,
+    at TEXT NOT NULL,
+    data TEXT NOT NULL                          -- JSON: items (green/amber/red), funnel, streak, drift, health
+);
+
+CREATE TABLE IF NOT EXISTS post_mortems (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trade_id INTEGER NOT NULL UNIQUE,
+    account TEXT NOT NULL,
+    at TEXT NOT NULL,
+    verdict TEXT NOT NULL,                      -- bad luck | bad decision | unclear
+    data TEXT NOT NULL                          -- JSON from the AI
+);
+
 CREATE TABLE IF NOT EXISTS kv (
     k TEXT PRIMARY KEY,
     v TEXT
@@ -359,7 +389,7 @@ class DB:
     def reset_account(self, acc: str, starting_balance: float) -> None:
         """Wipe one paper account back to its starting balance (history of that account removed)."""
         for table in ("positions", "trades", "decisions", "equity_snapshots", "disabled_signals",
-                      "strategy_state", "tuning_runs"):
+                      "strategy_state", "tuning_runs", "audit_counters", "audit_reports", "post_mortems"):
             self.execute(f"DELETE FROM {table} WHERE account=?", (acc,))
         self.execute("DELETE FROM accounts WHERE id=?", (acc,))
         self.execute("DELETE FROM kv WHERE k LIKE ?", (f"%:{acc}",))

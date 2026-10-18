@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .exits import manage, with_profile
 from .db import DB, iso
 from .feeds.prices import PriceCache, Quote
 from .instruments import INSTRUMENTS, Instrument, pnl_usd, quote_to_usd
@@ -107,16 +108,19 @@ class PaperBroker:
         self.db.execute("UPDATE accounts SET cash = cash + ? WHERE id=?", (delta, account))
 
     def open(self, cfg: dict, account: str, order: Order, signal: str, ai_reason: str | None,
-             decision_id: int | None, regime: str | None = None) -> int:
+             decision_id: int | None, regime: str | None = None, trial: bool = False,
+             exit_profile: str | None = None) -> int:
         cur = self.db.execute(
             "INSERT INTO positions(account, symbol, side, lots, units, leverage, entry, stop, initial_stop, target, "
-            "margin, risk_usd, signal, regime, ai_reason, decision_id, opened_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "margin, risk_usd, signal, regime, ai_reason, decision_id, opened_at, trial, exit_profile) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (account, order.symbol, order.side, order.lots, order.units, order.leverage, order.entry, order.stop,
-             order.stop, order.target, order.margin, order.risk_usd, signal, regime, ai_reason, decision_id, iso()))
+             order.stop, order.target, order.margin, order.risk_usd, signal, regime, ai_reason, decision_id, iso(),
+             int(trial), exit_profile))
         return int(cur.lastrowid)
 
-    def close(self, cfg: dict, p: dict, price: float, reason: str, fraction: float = 1.0) -> dict:
+    def close(self, cfg: dict, p: dict, price: float, reason: str, fraction: float = 1.0,
+              weekend: bool = True) -> dict:
         """Close all (fraction=1) or part of a position at `price`. Returns the trade row."""
         inst = INSTRUMENTS[p["symbol"]]
         lots = round(p["lots"] * fraction, 2) if fraction < 1 else p["lots"]
@@ -132,7 +136,7 @@ class PaperBroker:
             "entry": p["entry"], "exit": price, "stop": p["stop"], "target": p["target"],
             "pnl_usd": net, "pnl_r": net / risk if risk > 0 else None, "fees": fees, "swap": swap,
             "funding": funding, "signal": p["signal"], "regime": p.get("regime"), "ai_reason": p["ai_reason"],
-            "exit_reason": reason, "opened_at": p["opened_at"], "closed_at": iso(),
+            "exit_reason": reason, "opened_at": p["opened_at"], "closed_at": iso(), "trial": int(p.get("trial") or 0),
         }
         cols = ",".join(trade)
         self.db.execute(f"INSERT INTO trades({cols}) VALUES ({','.join('?' * len(trade))})", list(trade.values()))
@@ -143,8 +147,8 @@ class PaperBroker:
             keep = 1 - frac
             self.db.execute(
                 "UPDATE positions SET lots=ROUND(lots-?, 2), units=units*?, margin=margin*?, risk_usd=risk_usd*?, fees=fees*?, "
-                "swap=swap*?, funding=funding*?, weekend_halved=1 WHERE id=?",
-                (lots, keep, keep, keep, keep, keep, keep, p["id"]))
+                "swap=swap*?, funding=funding*?, weekend_halved=MAX(weekend_halved, ?) WHERE id=?",
+                (lots, keep, keep, keep, keep, keep, keep, int(weekend), p["id"]))
         log.info("[%s] Closed %s %s %.2f lots @ %s (%s) net %.2f", p["account"], p["side"], p["symbol"],
                  lots, price, reason, net)
         return trade
@@ -168,7 +172,7 @@ class PaperBroker:
             inst = INSTRUMENTS[p["symbol"]]
             if not q or not market_open(inst, now):
                 continue
-            cfg = cfg_for(p["account"])
+            cfg = with_profile(cfg_for(p["account"]), p.get("exit_profile"))
             px = self.exit_price(cfg, inst, p["side"], q)
             long = p["side"] == "LONG"
             if (long and px <= p["stop"]) or (not long and px >= p["stop"]):
@@ -180,13 +184,20 @@ class PaperBroker:
             if (long and px >= p["target"]) or (not long and px <= p["target"]):
                 closed.append(self.close(cfg, p, p["target"], "take profit"))
                 continue
-            be_r = cfg["exits"].get("breakeven_at_r", 0)
-            if be_r and p["stop"] != p["entry"]:
-                init_risk = abs(p["entry"] - p["initial_stop"])
-                moved = (px - p["entry"]) if long else (p["entry"] - px)
-                if init_risk > 0 and moved >= be_r * init_risk:
-                    self.db.execute("UPDATE positions SET stop=? WHERE id=?", (p["entry"], p["id"]))
-                    log.info("[%s] %s #%d stop moved to breakeven", p["account"], p["symbol"], p["id"])
+            # breakeven, partial take-profit and trailing stop (same rules as the backtest)
+            best = p.get("best_price") or p["entry"]
+            best = max(best, px) if long else min(best, px)
+            best_move = max(0.0, (best - p["entry"]) if long else (p["entry"] - best))
+            new_stop, frac = manage(p["side"], p["entry"], p["initial_stop"], p["stop"], best_move, p["lots"],
+                                    inst.min_lot, bool(p.get("partial_done")), cfg)
+            if frac:
+                closed.append(self.close(cfg, p, px, f"partial take profit (+{cfg['exits']['partial_at_r']:g}R)",
+                                         frac, weekend=False))
+                self.db.execute("UPDATE positions SET partial_done=1 WHERE id=?", (p["id"],))
+            if new_stop != p["stop"]:
+                log.info("[%s] %s #%d stop %s -> %s", p["account"], p["symbol"], p["id"], p["stop"], new_stop)
+            if new_stop != p["stop"] or best != p.get("best_price"):
+                self.db.execute("UPDATE positions SET stop=?, best_price=? WHERE id=?", (new_stop, best, p["id"]))
         return closed
 
     def check_stop_out(self, cfg: dict, account: str) -> list[dict]:

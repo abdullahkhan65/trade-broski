@@ -290,7 +290,7 @@ function renderStats(a) {
 
 // ----------------------------------------------------------------- tabs
 const TABS = [["trade", "Positions"], ["history", "History"], ["journal", "Journal"], ["scorecard", "Scorecard"],
-              ["learning", "Learning"], ["research", "Research"], ["playbook", "Playbook"], ["ai", "AI & budget"],
+              ["learning", "Learning"], ["audit", "Audit"], ["research", "Research"], ["playbook", "Playbook"], ["ai", "AI & budget"],
               ["controls", "Account"]];
 
 function renderTabsBar() {
@@ -307,7 +307,7 @@ async function renderTab() {
   renderTabsBar();
   const body = document.getElementById("tab-body");
   const views = { trade: async () => tradeTable(), history: historyTable, journal: journalTable, scorecard: scorecardTable,
-                  playbook: playbookView, learning: learningView, research: researchView, ai: async () => aiView(),
+                  playbook: playbookView, learning: learningView, audit: auditView, research: researchView, ai: async () => aiView(),
                   controls: async () => controlsView() };
   const t = tab, a = acc;
   const html = await (views[t] || views.trade)();
@@ -408,6 +408,48 @@ async function learningView() {
   </div>`;
 }
 
+async function auditView() {
+  const A = await api(`/api/audit?account=${acc}`);
+  const dot = { red: "bad", amber: "high", green: "good" };
+  const items = (rep) => rep.items.map((i) => `<tr><td><span class="chip ${dot[i.level]}">${i.level}</span></td>
+      <td>${esc(i.area)}</td><td class="wrap" style="color:var(--text)">${esc(i.message)}</td></tr>`).join("");
+  const f = A.today.funnel;
+  const funnel = `<div class="mcard" style="display:flex;gap:18px;flex-wrap:wrap;align-items:center">
+      <div><div class="muted">Candles checked</div><b class="mono">${f.checked}</b></div><div class="muted">→</div>
+      <div><div class="muted">No setup</div><b class="mono">${f.no_setup}</b></div>
+      <div><div class="muted">Filtered</div><b class="mono">${f.filtered.reduce((s, x) => s + x.n, 0)}</b></div><div class="muted">→</div>
+      <div><div class="muted">Setups</div><b class="mono">${f.signals}</b></div>
+      <div><div class="muted">Blocked</div><b class="mono">${f.blocked.reduce((s, x) => s + x.n, 0)}</b></div><div class="muted">→</div>
+      <div><div class="muted">Trades</div><b class="mono up">${f.opened}</b></div></div>
+    <div class="muted" style="margin:6px 0 0">${[...f.filtered, ...f.blocked].slice(0, 8).map((x) => `${esc(x.reason)} ×${x.n}`).join(" · ") || "nothing filtered or blocked today"}</div>`;
+  const hist = A.history.length ? A.history.map((r) => `<tr><td class="num">${r.day}</td><td><span class="chip ${dot[r.grade]}">${r.grade}</span></td>
+      <td class="wrap">${r.items.filter((i) => i.level !== "green").map((i) => esc(i.area + ": " + i.message)).join("<br>") || "all green"}</td></tr>`).join("")
+    : '<tr><td colspan="3" class="empty">No daily audits yet: the first runs at 00:15 UTC.</td></tr>';
+  const pm = A.post_mortems.length ? A.post_mortems.map((p) => `<tr><td class="num">${mtTime(p.at)}</td>
+      <td>${state.quotes[p.data.symbol]?.xm || p.data.symbol} · ${esc(p.data.signal)} <span class="${cls(p.data.r)}">${(p.data.r ?? 0).toFixed(2)}R</span></td>
+      <td><span class="chip ${p.verdict === "bad decision" ? "bad" : p.verdict === "bad luck" ? "good" : ""}">${p.verdict}</span></td>
+      <td class="wrap">${esc(p.data.what_happened)}${p.data.mistake ? `<br><b>Mistake:</b> ${esc(p.data.mistake)}` : ""}${p.data.lesson ? `<br><b>Lesson:</b> ${esc(p.data.lesson)}` : ""}</td></tr>`).join("")
+    : '<tr><td colspan="4" class="empty">No losing trades reviewed yet.</td></tr>';
+  return `<div class="pad">
+    <p class="muted" style="margin:0 0 10px;max-width:900px">The floor manager judges the <b>process</b>, not single results: why there were no trades,
+      whether a losing streak is normal for this win rate, whether live results are inside the backtest's range, and whether
+      prices, AI and the engine are healthy. Every losing trade gets a post-mortem: <b>bad luck</b> (fine) or <b>bad decision</b>
+      (becomes a playbook lesson). <button class="small" style="margin-left:6px" onclick="runAudit()">Run audit now</button></p>
+    <div class="section-title" style="margin-top:0">Today so far</div>
+    <table><tr><th>Status</th><th>Area</th><th>Finding</th></tr>${items(A.today)}</table>
+    <div class="section-title">Signal funnel today</div>${funnel}
+    <div class="section-title">Post-mortems of losing trades</div>
+    <table><tr><th>When</th><th>Trade</th><th>Verdict</th><th>Review</th></tr>${pm}</table>
+    <div class="section-title">Daily audits</div>
+    <table><tr><th>Day</th><th>Grade</th><th>Flags</th></tr>${hist}</table>
+  </div>`;
+}
+async function runAudit() {
+  await api("/api/audit/run", { method: "POST" });
+  toast("Audit started: yesterday's report and post-mortems appear in a minute");
+  setTimeout(renderTab, 20000);
+}
+
 async function researchView() {
   const R = await api("/api/research");
   const rev = R.review;
@@ -419,7 +461,7 @@ async function researchView() {
   const props = R.proposals.length ? R.proposals.map((p) => {
       const bt = p.evidence && p.evidence.backtest;
       return `<tr><td class="num">${mtTime(p.at)}</td><td>${LABEL[p.account] || p.account}</td>
-        <td><span class="chip ${p.action === "add" ? "good" : "bad"}">${p.action}</span> <b>${esc(p.item)}</b></td>
+        <td><span class="chip ${p.action === "add" ? "good" : p.action === "set" ? "" : "bad"}">${p.action}</span> <b>${esc(p.item)}</b></td>
         <td class="wrap">${esc(p.reason)}${bt ? ` · 2y: $250 → $${bt.equity}, max DD ${bt.max_dd_pct}%` : ""}</td>
         <td>${p.status === "pending" ? `<button class="small" onclick="decide(${p.id},'approve')">Approve</button>
           <button class="small ghost" onclick="decide(${p.id},'reject')">Reject</button>` : `<span class="chip">${p.status}</span>`}</td></tr>`; }).join("")
@@ -594,7 +636,7 @@ async function loadCompare() {
 // ------------------------------------------------------------------ start
 makeChart();
 selectAccount([...MODES, "compare"].includes(acc) ? acc : "standard");
-setInterval(() => { if (acc !== "compare") { loadState(); if (["journal", "scorecard", "ai", "learning", "history", "research"].includes(tab)) renderTab(); } }, 30000);
+setInterval(() => { if (acc !== "compare") { loadState(); if (["journal", "scorecard", "ai", "learning", "history", "research", "audit"].includes(tab)) renderTab(); } }, 30000);
 setInterval(() => refreshCandles().catch(() => {}), 60000);
 setInterval(() => { if (acc === "compare") loadCompare(); }, 60000);
 </script>
