@@ -249,7 +249,14 @@ function drawOverlays() {
 const zoneEls = [];
 function drawZones() {
   const box = document.getElementById("zones");
-  const show = opts.zones && acc !== "compare" ? zonesData : [];
+  // fresh (untouched) zones only, the 2 nearest to price above and below - touched ones are mostly spent
+  let show = [];
+  if (opts.zones && acc !== "compare" && lastBar) {
+    const p = lastBar.close, fresh = zonesData.filter((z) => !z.touched);
+    const above = fresh.filter((z) => z.bottom > p).sort((a, b) => a.bottom - b.bottom).slice(0, 2);
+    const below = fresh.filter((z) => z.top <= p).sort((a, b) => b.top - a.top).slice(0, 2);
+    show = [...above, ...below];
+  }
   const width = box.clientWidth - chart.priceScale("right").width();
   show.forEach((z, i) => {
     let el = zoneEls[i];
@@ -261,8 +268,7 @@ function drawZones() {
     setCls(el, `zone ${z.kind} ${z.side}`);
     el.style.display = ""; el.style.left = `${Math.max(0, x)}px`; el.style.width = `${Math.max(0, width - Math.max(0, x))}px`;
     el.style.top = `${Math.min(yTop, yBot)}px`; el.style.height = `${Math.max(2, Math.abs(yBot - yTop))}px`;
-    el.style.opacity = z.touched ? ".55" : "1";
-    setText(el.firstChild, `${z.kind === "fvg" ? "FVG" : "OB"}${z.touched ? " · touched" : ""}`);
+    setText(el.firstChild, Math.abs(yBot - yTop) >= 12 ? (z.kind === "fvg" ? "FVG" : "OB") : "");
   });
   for (let i = show.length; i < zoneEls.length; i++) zoneEls[i].style.display = "none";
 }
