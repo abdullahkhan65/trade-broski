@@ -11,6 +11,11 @@ Signals:
                     RSI and closed back inside: fade it back towards the middle.
 * momentum_breakout - (trending/volatile market) a strong candle closes beyond the
                     highest high / lowest low of the last 20 candles, with the trend.
+* london_orb / ny_orb - opening range breakout: the first close beyond the high/low of the
+                    first hour of London (08:00-09:00 London) or of the New York equity
+                    open (09:30-10:30 NY), within 3 hours. Stop at the middle of the range.
+* pdh_breakout    - first close of the day beyond the previous day's high/low with a strong
+                    body (>= 0.5 ATR). Stop back inside the level.
 * liquidity_sweep - (SMC) a previous-day / session high or low, or equal highs/lows, is
                     swept for the first time and the candle closes back inside with a
                     rejection wick. Stop beyond the sweep wick, target the opposite liquidity.
@@ -35,7 +40,7 @@ from datetime import datetime, timezone
 from . import indicators as ind
 from . import smc
 from .instruments import Instrument
-from .sessions import asian_range_bounds, in_trading_session, is_forex_like
+from .sessions import LONDON, NY, asian_range_bounds, in_trading_session, is_forex_like
 
 TWENTY_DAYS_OF_15M = 20 * 24 * 4
 TF_SECONDS = {"5m": 300, "15m": 900}
@@ -262,6 +267,76 @@ def momentum_breakout(inst: Instrument, candles: list[dict], cfg: dict, atr: flo
     return None
 
 
+ORB_SESSIONS = {"london_orb": (LONDON, 8, 0), "ny_orb": (NY, 9, 30)}
+ORB_MINUTES = 60
+ORB_WINDOW_H = 3                # the breakout must come within 3 hours of the range closing
+ORB_MIN_ATR, ORB_MAX_ATR = 0.8, 4.0
+
+
+def opening_range_breakout(inst: Instrument, candles: list[dict], cfg: dict, atr: float, now: datetime,
+                           kind: str) -> Signal | None:
+    tz, hh, mm = ORB_SESSIONS[kind]
+    local = now.astimezone(tz)
+    start = local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    st, et = int(start.timestamp()), int(start.timestamp()) + ORB_MINUTES * 60
+    last = candles[-1]
+    if not (et <= last["t"] < et + ORB_WINDOW_H * 3600):
+        return None
+    rng = [c for c in candles if st <= c["t"] < et]
+    if len(rng) < 0.8 * ORB_MINUTES * 60 / _tf(cfg):
+        return None
+    hi, lo = max(c["h"] for c in rng), min(c["l"] for c in rng)
+    if not (ORB_MIN_ATR * atr <= hi - lo <= ORB_MAX_ATR * atr):
+        return None                       # too tight (noise) or too wide (move already done)
+    after = [c for c in candles if et <= c["t"] <= last["t"]]
+    mid = (hi + lo) / 2
+    d = inst.decimals
+    name = "London" if kind == "london_orb" else "New York"
+    e = cfg["exits"]
+    if last["c"] > hi and all(c["c"] <= hi for c in after[:-1]):
+        side, stop_atr = "LONG", (last["c"] - mid) / atr
+    elif last["c"] < lo and all(c["c"] >= lo for c in after[:-1]):
+        side, stop_atr = "SHORT", (mid - last["c"]) / atr
+    else:
+        return None
+    if stop_atr > e["max_stop_atr"]:
+        stop_atr = e["max_stop_atr"]
+    return Signal(inst.symbol, side, kind, last["c"], atr, last["t"],
+                  f"First close {'above' if side == 'LONG' else 'below'} the {name} opening range "
+                  f"{lo:.{d}f}-{hi:.{d}f}", {"orb_high": hi, "orb_low": lo},
+                  stop_atr=round(max(stop_atr, e["min_stop_atr"]), 2))
+
+
+PDH_BODY_ATR = 0.5
+PDH_STOP_PAD_ATR = 0.3
+
+
+def pdh_breakout(inst: Instrument, candles: list[dict], cfg: dict, atr: float,
+                 levels: list[smc.Level]) -> Signal | None:
+    last = candles[-1]
+    body = last["c"] - last["o"]
+    if abs(body) < PDH_BODY_ATR * atr:
+        return None
+    today0 = last["t"] - last["t"] % 86400
+    today = [c for c in candles if c["t"] >= today0]
+    e = cfg["exits"]
+    d = inst.decimals
+    for lv in levels:
+        if lv.name == "PDH" and body > 0 and last["c"] > lv.price and all(c["c"] <= lv.price for c in today[:-1]):
+            stop_atr = (last["c"] - (lv.price - PDH_STOP_PAD_ATR * atr)) / atr
+            side = "LONG"
+        elif lv.name == "PDL" and body < 0 and last["c"] < lv.price and all(c["c"] >= lv.price for c in today[:-1]):
+            stop_atr = ((lv.price + PDH_STOP_PAD_ATR * atr) - last["c"]) / atr
+            side = "SHORT"
+        else:
+            continue
+        stop_atr = min(max(stop_atr, e["min_stop_atr"]), e["max_stop_atr"])
+        return Signal(inst.symbol, side, "pdh_breakout", last["c"], atr, last["t"],
+                      f"First close of the day {'above PDH' if side == 'LONG' else 'below PDL'} "
+                      f"{lv.price:.{d}f} with a strong candle", {"level": lv.name}, stop_atr=round(stop_atr, 2))
+    return None
+
+
 SWEEP_LEVELS = ("PDH", "PDL", "Asian", "London", "New York", "equal")
 SWEEP_MAX_DEPTH_ATR = 1.0      # deeper than this is a breakout, not a sweep
 SWEEP_CLOSE_SHARE = 0.6        # close in the top 40% (long) / bottom 40% (short) of the candle
@@ -326,6 +401,15 @@ def htf_trend(candles: list[dict], cfg: dict) -> str | None:
     return "flat"
 
 
+def allowed(allowlist: list[str], symbol: str, strategy: str) -> bool:
+    """'XAU_USD:session_breakout', 'XAU_USD:*', '*:ny_orb' or '*:*'."""
+    for item in allowlist:
+        sym, _, strat = item.partition(":")
+        if sym.strip() in ("*", symbol) and strat.strip() in ("*", strategy):
+            return True
+    return False
+
+
 def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | None = None,
              news_bias: dict | None = None, disabled: set[str] | None = None,
              atr_floor: float | None = None) -> tuple[list[Signal], str]:
@@ -360,13 +444,28 @@ def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | N
         sig = momentum_breakout(inst, candles, cfg, f.atr, regime)
         if sig:
             out.append(sig)
-    levels = smc.key_levels(candles, f.atr) if (s.get("liquidity_sweep") or s.get("smc_filter")) else []
+    levels = (smc.key_levels(candles, f.atr)
+              if (s.get("liquidity_sweep") or s.get("smc_filter") or s.get("pdh_breakout")) else [])
+    for kind in ("london_orb", "ny_orb"):
+        if s.get(kind) and kind not in disabled:
+            sig = opening_range_breakout(inst, candles, cfg, f.atr, now, kind)
+            if sig:
+                out.append(sig)
+    if s.get("pdh_breakout") and "pdh_breakout" not in disabled:
+        sig = pdh_breakout(inst, candles, cfg, f.atr, levels)
+        if sig:
+            out.append(sig)
     if s.get("liquidity_sweep") and "liquidity_sweep" not in disabled:
         sig = liquidity_sweep(inst, candles, cfg, f.atr, levels)
         if sig:
             out.append(sig)
     for sig in out:
         sig.regime = regime.name if regime else "unknown"
+    allow = s.get("allowlist") or []
+    if allow and out:
+        out = [x for x in out if allowed(allow, inst.symbol, x.type)]
+        if not out:
+            return [], "strategy not on this account's allowlist for this symbol"
     # if two signals disagree on direction, take neither
     if len({x.side for x in out}) > 1:
         return [], "conflicting signals"

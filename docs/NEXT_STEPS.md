@@ -19,7 +19,7 @@
 - [x] Smart Money Concepts: PDH/PDL, session levels, liquidity pools, sweeps, FVG, order blocks; location filter, AI context, chart overlay; liquidity-sweep strategy (off until proven)
 - [x] Daily review, weekly playbook, scorecard with auto-disable
 - [x] Nightly backups (local and Telegram), systemd, Caddy, setup and update scripts
-- [x] 59 unit tests: XM lot sizing and min-lot rules, spreads, gaps, breakeven, swap, stop-out, weekend freeze, DB upgrade, settings limits, signals on M5/M15
+- [x] 67 unit tests: XM lot sizing and min-lot rules, spreads, gaps, breakeven, swap, stop-out, weekend freeze, DB upgrade, settings limits, signals on M5/M15
 
 **Not yet verified**, because it needs your keys or a server:
 - [ ] A real Haiku call through the gate (budget guards and parsing are unit-level only)
@@ -38,7 +38,9 @@
 
 ## Strategy work (important)
 
-**Latest (18 Oct 2026, 60 days M15 / 30 days M5 with XM spreads):** most strategies lose after costs. Standard is about flat, Moderate loses, and Aggressive BTC on M5 with the SMC filter is the only clear positive (+7%). Aggressive can't trade EURUSD/GBPUSD on M5 at all, because the spread is about half the stop. Next tests, in order:
+**2-year study (18 Oct 2026):** the only edge that held in both years is GOLD's Asian-range breakout on M15 with the H1 + SMC filters, and all three real accounts now trade it (backtest +27% to +45% over 2 years, ~1 trade a week each). The Lab account takes every signal for activity and live data. To get *more* real trades, test new setups through the same both-years test. Ideas: a gold New York-session pullback after the London breakout, BTC weekend range fades, a gold M15 trend pullback with a stricter filter (it was +0.02R, nearly there), and an XM raw-spread account (it halves forex costs, but the forex strategies would still need an edge).
+
+**Earlier (60 days M15 / 30 days M5 with XM spreads):** most strategies lose after costs. Standard is about flat, Moderate loses, and Aggressive BTC on M5 with the SMC filter is the only clear positive (+7%). Aggressive can't trade EURUSD/GBPUSD on M5 at all, because the spread is about half the stop. Next tests, in order:
 1. A **2-year backtest** of every mode with the new rules (`python -m app.backtest --mode standard --symbol all --days 730`). 60 days is too few trades to decide anything.
 2. **Aggressive on M15 for forex**, keeping M5 for BTC (needs a timeframe setting per symbol).
 3. A sweep **with confirmation** (enter on the retest of the FVG/OB the sweep candle left, not at its close).

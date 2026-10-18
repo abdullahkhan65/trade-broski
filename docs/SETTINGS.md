@@ -2,38 +2,34 @@
 
 Everything on `/settings` applies **within a few seconds**, with no restart. Every save is kept as a version, so you can revert from "Change history" at the bottom of the page.
 
-## The three accounts (modes)
+## The accounts (modes)
 
-The bot runs **three separate $250 paper accounts at the same time**, on the same live prices. Each has its own rules, its own trades and its **own AI playbook**. Compare them on the dashboard's **⚖ Compare** tab.
+The bot runs **four separate $250 paper accounts at the same time** on the same live prices: three real strategies and a Lab. Each has its own rules, trades and **AI playbook**. Compare them on the dashboard's **Compare** tab.
 
-| | Standard: "marathon" | Moderate: "professional swing/day" | Aggressive: "small-account scaler" |
+The rules come from a **2-year backtest** (Oct 2024 – Oct 2026, XM Standard costs, $250 sizing). Of about 2,200 strategy × symbol × filter × exit combinations, the one that made money in **both** years under every account's rules was **GOLD's Asian-range breakout on M15, traded only with the H1 trend and with the SMC filter**. Everything else, including every forex strategy and everything on M5, lost money after costs. So the three real accounts trade that edge, at different risk levels:
+
+| | Standard | Moderate | Aggressive |
 |---|---|---|---|
-| Idea | Wall Street-style: trusts the process, no greed | Steady growth over months | Hunts clean entries, quick profits, scales a small account without blowing it |
-| Timeframe | M15, **only with the H1 trend** | M15 | **M5** + cost filter |
-| Risk per trade | 0.75% | 1% | 2% |
-| If 0.01 lot risks more than that | **skip** | allow up to 2% | allow up to 5% |
-| **Stop for the day at profit** | **+1.5%** | **+2.5%** | **+5%** (risk halves after +3%) |
-| **Stop for the day at loss** | −2% | −2.5% | −5% |
-| Max new trades per day | 3 | 4 | 8 |
-| After 2 losses in a row (today) | **done for the day** | half risk until a win | half risk until a win |
-| Cost filter (skip if spread > % of stop) | off | off | 15% |
-| Weekly loss stop | 5% | 7% | 12% |
-| Kill switch (drawdown from peak) | 15% | 20% | 25% |
-| Max effective leverage forex / gold / BTC | 10 / 5 / 3 | 20 / 10 / 5 | 30 / 20 / 10 |
-| Max open positions (USD forex) | 2 (1) | 3 (2) | 4 (3) |
-| Stop / target (× ATR) | 1.5 / 3.0 | 1.5 / 2.5 | 1.2 / 1.8 |
-| Min reward:risk | 2.0 | 1.5 | 1.2 |
-| Stop to breakeven at | off | +1.5R | **+1R** |
-| News momentum signal | off | on | on |
-| Min AI confidence | 0.60 | 0.55 | 0.50 |
-| Trade without AI | no | rules only | rules only |
-| Friday close (gold/forex) | close | halve | close |
+| Style | Patient professional | Swing/day trader | Small-account scaler |
+| Timeframe | M15 | M15 | M15 |
+| Allowlist | GOLD session breakout | GOLD session breakout + **BTC London ORB (trial)** | GOLD session breakout |
+| Risk per trade | 1% | 1.5% | 2.5% |
+| 0.01 lot allowed up to | 5% | 6% | 6% |
+| Stop / target (× ATR) | 1.5 / 3.0 | 1.5 / 2.5 | 1.5 / 2.5 |
+| Breakeven | off | +1.5R | +1R |
+| Momentum-stall exit | on (35% of target, 3 candles, 0.8 ATR) | on | on |
+| Done for the day at | +4% / −5% | +5% / −6% | +6% / −7% (half risk after +4%) |
+| Max trades per day | 2 | 3 | 6 |
+| After losses in a row | 2 → done for the day | 2 → half risk | 3 → half risk |
+| Weekly loss stop / kill switch | 10% / 25% | 12% / 30% | 15% / 35% |
+| Min AI confidence (Haiku, plus Sonnet on big trades) | 0.55 | 0.50 | 0.50 |
+| **2-year backtest from $250** | **+29%**, max drawdown 23% | **+45%** (gold), max drawdown 22% | **+27%**, max drawdown 21% |
 
-**The daily % numbers are caps, not quotas.** When a mode reaches its daily profit or loss level it stops opening trades until the next UTC day; open trades keep their stops. A quiet day at 0% is fine. Forcing trades to hit a number is how accounts get blown. For scale: 1% a day for a year is about 12× the account, and the best funds make 10–30% a *year*.
+**Lab:** takes **every** signal from every strategy on every symbol, with no AI, no filters and no daily caps. It runs at 1% risk, allows the 0.01 lot up to 8%, and has a 50% kill switch. It's there so there's always activity and live data on every strategy. Expect it to lose money: that's what the backtest says these strategies do. Don't copy it.
 
-Risk is a % of current equity, so lots grow as the account grows (compounding) and shrink after losses.
+**Expect about 1 trade a week per real account.** That's how often the proven setup appears. Activity comes from the Lab. More real trades need new setups that pass the same 2-year test (NEXT_STEPS.md).
 
-**"Reset to default"** under each column restores that mode's defaults. **Account running** turns a mode off without touching its history. On the dashboard's **Account** tab you can **reset an account to $250** to start a mode's test over.
+**The daily % numbers are caps, not quotas.** When an account hits its daily profit or loss level it stops opening trades until the next UTC day.
 
 ### The 0.01-lot problem on a $250 XM Standard account
 XM's minimum is **0.01 lot**: 1,000 units of EURUSD, **1 oz of gold**, or 0.01 BTC. With normal stops:
@@ -45,7 +41,7 @@ XM's minimum is **0.01 lot**: 1,000 units of EURUSD, **1 oz of gold**, or 0.01 B
 | GOLD | ~$12 | **~$12** | **~4.8%** |
 | BTCUSD | ~$900 | **~$9** | **~3.6%** |
 
-So **Standard and Moderate will mostly skip gold and BTC**. The Journal tab shows "0.01 lot would risk 4.8%", and Market Watch shows the current 0.01-lot risk for each symbol. Aggressive takes them, at up to 5% risk per trade. That's the truth of a $250 Standard account, not a bug. To trade gold on the safer modes you need a bigger balance (about $1,200+ for 1% risk) or an **XM Micro account**, where lots are 100× smaller.
+Since the only proven edge is on gold, **all three real accounts now accept gold's 0.01 lot** (up to 5–6% risk per trade). The Journal tab shows "0.01 lot would risk 4.8%", and Market Watch shows the current 0.01-lot risk for each symbol. Aggressive takes them, at up to 5% risk per trade. That's the truth of a $250 Standard account, not a bug. To trade gold on the safer modes you need a bigger balance (about $1,200+ for 1% risk) or an **XM Micro account**, where lots are 100× smaller.
 
 ## Every per-mode setting
 - **Timeframe**: M5 or M15 candles for that account's signals. M5 means more trades, more noise and more spread cost per trade.
@@ -64,6 +60,10 @@ So **Standard and Moderate will mostly skip gold and BTC**. The Journal tab show
 - **Stops & targets**: default stop and target in × ATR. The AI's suggestion is clamped between the tightest and widest stop, and the target is always ≥ min reward:risk.
 - **Move stop to breakeven at +R**: at +X R the stop moves to the entry price (0 = off).
 - **Signals**: switch trend pullback, session breakout and news momentum on or off, plus the London/NY session filter.
+- **Allowlist (symbol:strategy, one per line)**: when it isn't empty, an account only trades these pairs, e.g. `XAU_USD:session_breakout`, `BTC_USDT:*` or `*:ny_orb`. The defaults come from the 2-year backtest: only pairs that made money in both years. Empty means every enabled strategy on every symbol.
+- **London / New York opening-range breakout, previous-day high/low breakout**: the newer strategies (STRATEGY.md).
+- **Take profit when momentum stalls** + 3 thresholds: the "human instinct" exit (STRATEGY.md §7a).
+- **Ask Claude before trades** (`ai.use_ai`): off means rules only, with no AI cost and no daily review or playbook (used by the Lab account).
 - **SMC location filter** (all modes, on): skip a signal when unswept liquidity (PDH/PDL, session highs/lows, equal highs/lows) or an opposite order block sits closer than the stop distance. See STRATEGY.md §7b.
 - **Liquidity sweep signal** (off): the SMC sweep-and-reclaim strategy, with a stop beyond the wick and a target at the next liquidity. It lost in the first backtest, so it's off until it proves itself.
 - **Only trade with the H1 trend**: hourly candles are built from the M5/M15 ones. Longs only when the H1 close is above EMA50 and EMA20 is above EMA50; shorts the opposite; a flat H1 means no trade.

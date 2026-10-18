@@ -117,14 +117,16 @@ async def job_daily() -> None:
     await telegram.send("\n".join(msg))
     if store.current["ai"]["daily_review"]:
         for m in store.active_modes():
-            await telegram.send(await daily_review(ai, db, store.cfg(m), m, y))
+            if store.cfg(m)["ai"]["use_ai"]:
+                await telegram.send(await daily_review(ai, db, store.cfg(m), m, y))
     prune_candles(db)
 
 
 async def job_weekly() -> None:
     if store.current["ai"]["weekly_playbook"]:
         for m in store.active_modes():
-            await telegram.send(await weekly_playbook(ai, db, store.cfg(m), m, scorecard.as_text(db, m)))
+            if store.cfg(m)["ai"]["use_ai"]:
+                await telegram.send(await weekly_playbook(ai, db, store.cfg(m), m, scorecard.as_text(db, m)))
 
 
 async def job_backup() -> None:
@@ -192,7 +194,8 @@ async def run_tuner(mode: str) -> dict:
 
 async def job_tune() -> None:
     for m in store.active_modes():
-        await run_tuner(m)
+        if store.current["modes"][m]["adaptive"]["auto_tune"]:
+            await run_tuner(m)
 
 
 # ========================================================= telegram commands

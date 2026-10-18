@@ -10,7 +10,7 @@ from app.db import DB
 from app.feeds.dukascopy import RECORD, parse_day
 from app.feeds.prices import PriceCache, load_candles, store_candles
 from app.instruments import INSTRUMENTS, notional_usd, pnl_usd, usd_per_lot
-from app.settings_store import DEFAULTS, FIELD_BY_KEY, MODES, SettingsStore, cfg_for, validate
+from app.settings_store import DEFAULTS, FIELD_BY_KEY, MODE_DEFAULTS, MODES, SettingsStore, cfg_for, validate
 from app.signals import evaluate, session_breakout
 
 TUESDAY_NOON = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
@@ -62,23 +62,31 @@ def test_short_pnl_sign():
 
 # --------------------------------------------------------------- lot sizing
 def test_lots_floor_to_step_and_risk_within_budget():
-    o = risk.size_order(INSTRUMENTS["EUR_USD"], cfg("standard"), "LONG", 1.1000, 0.0008, 250.0, 0.0)
+    c = cfg("standard")
+    c["risk"]["risk_per_trade_pct"] = 1.0
+    o = risk.size_order(INSTRUMENTS["EUR_USD"], c, "LONG", 1.1000, 0.0008, 250.0, 0.0)
     assert isinstance(o, risk.Order)
-    assert o.lots == 0.01                     # 0.75%: $1.875 budget / $120 per lot-stop = 0.0156 -> 0.01
-    assert o.risk_usd <= 1.875 + 1e-9
-    assert o.units == pytest.approx(1000)
-    assert o.margin == pytest.approx(notional_usd(INSTRUMENTS["EUR_USD"], 1000, 1.1) / 1000)
+    assert o.lots == 0.02                     # 1%: $2.50 budget / $120 per lot-stop = 0.0208 -> 0.02
+    assert o.risk_usd <= 2.5 + 1e-9
+    assert o.units == pytest.approx(2000)
+    assert o.margin == pytest.approx(notional_usd(INSTRUMENTS["EUR_USD"], 2000, 1.1) / 1000)
 
 
 def test_min_lot_rules_per_mode():
     gold = INSTRUMENTS["XAU_USD"]
     # 15m gold ATR $8 -> 1.5 ATR stop = $12 per 0.01 lot = 4.8% of $250
-    std = risk.size_order(gold, cfg("standard"), "LONG", 4000.0, 8.0, 250.0, 0.0)
+    skip = cfg("standard")
+    skip["risk"].update(min_lot_rule="skip")
+    std = risk.size_order(gold, skip, "LONG", 4000.0, 8.0, 250.0, 0.0)
     assert isinstance(std, risk.Rejection) and "0.01 lot would risk 4.8%" in std.reason
-    assert isinstance(risk.size_order(gold, cfg("moderate"), "LONG", 4000.0, 8.0, 250.0, 0.0), risk.Rejection)
+    tight = cfg("moderate")
+    tight["risk"].update(min_lot_max_risk_pct=2.0)
+    assert isinstance(risk.size_order(gold, tight, "LONG", 4000.0, 8.0, 250.0, 0.0), risk.Rejection)
+    ok = risk.size_order(gold, cfg("standard"), "LONG", 4000.0, 8.0, 250.0, 0.0)    # allowed up to 5%
+    assert isinstance(ok, risk.Order) and ok.lots == 0.01
     agg = risk.size_order(gold, cfg("aggressive"), "LONG", 4000.0, 8.0, 250.0, 0.0)
     assert isinstance(agg, risk.Order) and agg.lots == 0.01 and "allowed up to" in agg.note
-    assert agg.risk_pct == pytest.approx(3.84, abs=0.01)    # aggressive default stop = 1.2 ATR
+    assert agg.risk_pct == pytest.approx(4.8, abs=0.01)     # aggressive default stop = 1.5 ATR
 
 
 def test_ai_cannot_exceed_caps():
@@ -112,6 +120,9 @@ def test_portfolio_rules():
 
 def test_loss_limits_and_daily_target():
     s, a = cfg("standard"), cfg("aggressive")
+    s["risk"].update(kill_switch_drawdown_pct=20, weekly_loss_limit_pct=6, daily_loss_limit_pct=3,
+                     daily_profit_target_pct=1.5)
+    a["risk"].update(daily_profit_target_pct=5)
     assert risk.account_limit_status(s, 200, 250, 250, 250)[0] == "halted"
     assert risk.account_limit_status(s, 234, 250, 240, 250)[0] == "paused_weekly"
     assert risk.account_limit_status(s, 242, 250, 250, 248)[0] == "paused_daily"
@@ -226,10 +237,10 @@ def test_swap_points_triple_wednesday(setup):
 def test_halve_and_min_lot_close(setup):
     db, prices, broker, _ = setup
     o = _open(broker, prices, "moderate", "EUR_USD", "LONG", 1.1, 1.10016, 0.0008)
-    assert o.lots == 0.02
+    assert o.lots == 0.03                                                   # 1.5% of $250 / $120 per lot-stop
     broker.close_at_market(cfg("moderate"), broker.positions("moderate")[0], "weekend halve", fraction=0.5)
     p = broker.positions("moderate")[0]
-    assert p["lots"] == 0.01 and p["weekend_halved"] == 1
+    assert p["lots"] in (0.01, 0.02) and p["weekend_halved"] == 1          # half of 0.03, on the 0.01 step
     db.execute("UPDATE positions SET lots=0.01, units=1000")
     broker.close_at_market(cfg("moderate"), broker.positions("moderate")[0], "weekend halve", fraction=0.5)
     assert broker.positions("moderate") == []                              # 0.01 can't be halved
@@ -257,13 +268,14 @@ def test_hard_limits_cannot_be_exceeded():
 
 def test_modes_differ_and_reset(setup):
     _, _, _, store = setup
-    assert store.cfg("aggressive")["timeframe"] == "5m" and store.cfg("standard")["timeframe"] == "15m"
+    assert store.cfg("standard")["timeframe"] == "15m"
+    assert store.cfg("aggressive")["risk"]["risk_per_trade_pct"] > store.cfg("standard")["risk"]["risk_per_trade_pct"]
     data = store.current
     data["modes"]["moderate"]["risk"]["risk_per_trade_pct"] = 2.5
     store.save(data)
     assert store.cfg("moderate")["risk"]["risk_per_trade_pct"] == 2.5
     store.reset_mode("moderate")
-    assert store.cfg("moderate")["risk"]["risk_per_trade_pct"] == 1.0
+    assert store.cfg("moderate")["risk"]["risk_per_trade_pct"] == MODE_DEFAULTS["moderate"]["risk"]["risk_per_trade_pct"]
 
 
 def test_bad_choice_rejected():
@@ -282,7 +294,7 @@ def test_old_database_is_backed_up(tmp_path):
     db = DB(path)
     assert db.migrated_from and (tmp_path / db.migrated_from.split("/")[-1]).exists()
     db.ensure_accounts(MODES, 250)
-    assert len(db.all("SELECT * FROM accounts")) == 3
+    assert len(db.all("SELECT * FROM accounts")) == len(MODES)
     assert DB(path).migrated_from is None          # second start: no migration
 
 

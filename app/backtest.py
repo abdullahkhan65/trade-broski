@@ -31,6 +31,7 @@ from pathlib import Path
 
 from . import indicators as ind
 from . import risk
+from .exits import stall_exit
 from .config import ENV, ROOT
 from .feeds import build_feeds, dukascopy
 from .feeds.prices import PriceCache, tf_seconds
@@ -152,7 +153,7 @@ def simulate(inst: Instrument, candles: list[dict], signals: dict[int, object], 
             o = risk.Rejection(block) if block else risk.size_order(inst, cfg, sig.side, entry, sig.atr, equity, 0.0,
                                                                     sig.stop_atr, sig.target_atr, risk_mult=mult)
             if isinstance(o, risk.Order):
-                pos = {"o": o, "sig": sig, "t": c["t"], "stop": o.stop}
+                pos = {"o": o, "sig": sig, "t": c["t"], "stop": o.stop, "i": i}
                 fills_today += 1
             else:
                 key = re.sub(r"[\d.]+", "N", o.reason.split(" ($")[0].split(";")[0])[:50]
@@ -176,6 +177,11 @@ def simulate(inst: Instrument, candles: list[dict], signals: dict[int, object], 
                     exit_px, reason = pos["stop"], "stop"
                 elif bid_l <= o.target:
                     exit_px, reason = o.target, "target"
+            if exit_px is None:
+                # "human instinct": consolidating short of the target -> take it at this candle's close
+                why = stall_exit(o.side, o.entry, o.target, candles[pos["i"]:i + 1], pos["sig"].atr, cfg)
+                if why:
+                    exit_px, reason = (c["c"] - half if long else c["c"] + half), "stall"
             if exit_px is not None:
                 gross = pnl_usd(inst, o.side, o.units, o.entry, exit_px)
                 nights = max(0, int((c["t"] - pos["t"]) // 86400))

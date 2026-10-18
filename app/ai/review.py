@@ -14,26 +14,26 @@ from ..settings_store import MODE_BLURBS, MODE_LABELS
 from .client import AIClient
 
 SEED_PLAYBOOKS = {
-    "standard": """1. Only trade in the direction of the 50 EMA trend; never counter-trend.
-2. Only A-grade setups: clean pullback to the 20 EMA or a clear first breakout of the Asian range.
-3. Skip anything within 30 minutes of high-impact news for that currency.
-4. Never enter right after a large candle - wait for the pullback.
-5. Let winners run to at least 2R; never move the target closer.
-6. Fewer, cleaner trades beat many average ones. When in doubt, SKIP.
-7. Protect capital first: the goal is steady growth, not big days.""",
-    "moderate": """1. Trade with the 50 EMA trend; counter-trend only on strong news bias with price confirmation.
-2. Take B+ setups too, as long as reward:risk is at least 1.5.
-3. Use the AI news bias: favour trades in the direction of a fresh, strong catalyst.
-4. Avoid entries 15 minutes either side of high-impact news.
-5. Gold and GBPUSD move fast - respect the wider stop.
-6. After 2 losses in a row on one symbol, skip that symbol for the rest of the session.""",
-    "aggressive": """1. Scalp M5 in the direction of the M15/M5 trend during London and New York only.
-2. Best windows: London open (07:00-10:00 UTC) and New York open (12:30-15:30 UTC).
-3. Quick targets (1.2-1.8R); the stop moves to breakeven at +1R - don't give winners back.
-4. Momentum after news is fine once the first spike candle has closed; never trade the spike itself.
-5. Skip choppy, flat markets: if the last 12 candles overlap heavily, SKIP.
-6. Daily goal +3%: once hit, the account stops for the day. Don't force trades early in the day.
-7. Two losses in a row on a symbol = stop trading that symbol until the next session.""",
+    "standard": """1. Main edge (2-year backtest): GOLD's first close beyond the Asian range during London/NY, WITH the H1 trend.
+2. Take it only when the breakout candle closes cleanly beyond the range - not a wick poke that closes back inside.
+3. Skip if unswept liquidity (PDH/PDL, session high/low) or an opposite order block sits just ahead of the trade.
+4. Skip within 30 minutes of high-impact USD news; the breakout must not be the news spike itself.
+5. If the Asian range was unusually wide (> 3 ATR) the move is often done - be stricter.
+6. Patience: 1-2 trades a week is normal. Never force a trade to hit a daily number.
+7. When price stalls short of the target, the bot takes the profit - that is intended.""",
+    "moderate": """1. Main edge: GOLD Asian-range breakout during London/NY with the H1 trend (2-year backtest, both years positive).
+2. On trial: BTC London opening-range breakout with the H1 trend - be selective, it is only slightly positive.
+3. Prefer breakouts that start after liquidity was taken on the other side (a sweep) and have room to the next pool.
+4. Skip breakouts straight into PDH/PDL, a session high/low or an opposite order block.
+5. Avoid entries 15 minutes either side of high-impact news.
+6. After 2 losses in a row the bot halves risk - keep standards high, don't chase.""",
+    "aggressive": """1. Edge (2-year backtest): GOLD's first close beyond the Asian range on M15, with the H1 trend.
+2. Hunt the clean entry: a strong close beyond the range, not a wick. Late breakouts (> 3 hours into London) are weaker.
+3. Skip breakouts straight into unswept liquidity or an opposite order block.
+4. Never trade the news spike candle itself; momentum after it is fine.
+5. Quick management: breakeven at +1R, profit taken when momentum stalls. Don't give winners back.
+6. Risk halves after the day is +4%; done for the day at +6% or -7%.""",
+    "lab": """Research account: no AI, takes every signal. This playbook is not used.""",
 }
 
 LESSONS_SCHEMA = {

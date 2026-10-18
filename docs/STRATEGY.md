@@ -104,7 +104,7 @@ Gold on M15 (ATR ~$8 → stop $12): 0.01 lot already risks $12 = 4.8%. Standard 
 Every candle is labelled from ADX (trend strength) and where ATR sits in its 20-day range:
 `volatile` (ATR in its top 10%), `trend` (ADX ≥ 25), `range` (ADX ≤ 20), otherwise `mixed`. Market Watch shows the label for each symbol.
 
-### Six strategies
+### Strategies
 | Strategy | Fires in | Idea |
 |---|---|---|
 | `trend_pullback` | any | Pullback to the 20 EMA in a 50 EMA trend, RSI turns back |
@@ -112,6 +112,8 @@ Every candle is labelled from ADX (trend strength) and where ATR sits in its 20-
 | `news_momentum` | any | Strong AI news bias confirmed by price |
 | `range_reversion` | range, mixed | Poke outside a Bollinger band with stretched RSI, close back inside → fade to the middle |
 | `momentum_breakout` | trend, volatile | Strong candle closes beyond the 20-candle high/low, with the trend |
+| `london_orb` / `ny_orb` | any | Opening-range breakout: first close beyond the first hour of London (08:00–09:00 London) or of the New York open (09:30–10:30 NY), within 3 hours; stop at the middle of the range |
+| `pdh_breakout` | any | First close of the day beyond the previous day's high/low with a strong candle (body ≥ 0.5 ATR) |
 | `liquidity_sweep` (SMC, **off by default**) | any | First sweep of PDH/PDL, a session high/low or equal highs/lows, closing back inside with a rejection wick. Stop beyond the wick, target the next opposite liquidity |
 
 ### Strategy switching (`app/adaptive.py`)
@@ -132,6 +134,15 @@ The result appears in the 🧠 Learning tab, and the change is saved as a settin
 
 ### Playbook loop
 Daily, Haiku turns each account's trades and skipped signals into lessons. On Sunday **Sonnet** rewrites each account's playbook from those lessons and the scorecard (falling back to Haiku if Sonnet is over budget). Haiku and Sonnet read the playbook before every decision.
+
+## 7a. "Human instinct" exit (`app/exits.py`)
+A discretionary trader who shorted gold at 4070 for 4050 and sees it stall around 4060 takes the 10 points and looks for the next setup. The bot does the same, on every closed candle:
+- the trade has covered at least **35%** of the way to its target;
+- the last **3** candles made no new favourable extreme (no lower low for a short, no higher high for a long);
+- those candles are tight, within **0.8 × ATR** (a consolidation, not a sharp move against the trade, which is the stop's job);
+- then it closes at market with "momentum stalled at X% of target".
+
+In the 2-year test across 637 strategy/symbol/mode combinations, it improved results slightly on average (+0.02R per trade). It helped most on the gold session breakout (+21.7R becomes +25.4R for Standard). The same function runs in the backtest and live. Each mode's settings: *Take profit when momentum stalls*, and the three thresholds.
 
 ## 7b. Smart Money Concepts (`app/smc.py`)
 The bot codes SMC as objective rules, so it never relies on hand-drawn judgement:
@@ -168,6 +179,26 @@ So the filter is on by default, and the sweep strategy is off until a longer tes
 - **Aggressive gold** loses, and **Aggressive BTC** is the only clearly positive result.
 
 This is a small sample, which is exactly why the bot is paper-trading.
+
+## 7c. The 2-year study (18 Oct 2026)
+Method:
+1. Record every signal of 8 strategies over 2 years of M5 and M15 history for GOLD, EURUSD, GBPUSD and BTCUSD (~80,000 signals).
+2. Replay them under each account's rules with XM Standard costs: 4 filter variants (none, SMC, H1 trend, both) and 3 exit styles (no stall exit, stall, fast stall).
+3. Split the trades into year 1 and year 2. **A combination only counts if it made money in both years**, with at least 20 trades in each.
+4. Re-test the finalists through the full live pipeline with $250 sizing and the 0.01-lot minimum.
+
+| Result | |
+|---|---|
+| Combinations tested | ~2,200 |
+| Passed both years | 29, almost all **GOLD session breakout M15** in some variant |
+| Best | GOLD session breakout + H1 + SMC: +0.14 to +0.18R per trade, in every account style |
+| Forex (EURUSD, GBPUSD) | every strategy loses after costs, and still loses with raw-spread costs |
+| M5 | the M5 "edges" (gold breakout, BTC NY ORB) disappeared with real $250 sizing (−11% and −13%) |
+| Busiest strategies | the biggest losers, e.g. BTC M5 trend pullback: 2.7 trades a day, −300R over 2 years |
+| New strategies | London ORB, NY ORB and PDH breakout: none robust; BTC London ORB is about flat (on trial in Moderate) |
+| Final accounts from $250 | Standard +29%, Moderate +45%, Aggressive +27% (2 years, ~1 trade a week each) |
+
+Rerun it with `python -m app.backtest --mode <mode> --symbol all --days 730`. The study scripts were one-off; to repeat the full grid, ask for it to be added to `app/` as a tool.
 
 ## 8. First backtest result (honest)
 Run on 17 Oct 2026 on BTC:

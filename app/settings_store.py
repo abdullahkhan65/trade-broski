@@ -20,22 +20,25 @@ from typing import Any
 
 from .db import DB, iso
 
-MODES = ["standard", "moderate", "aggressive"]
-DEFAULTS_VERSION = 2          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
+MODES = ["standard", "moderate", "aggressive", "lab"]
+DEFAULTS_VERSION = 3          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
 MODE_LABELS = {
     "standard": "Standard",
     "moderate": "Moderate",
     "aggressive": "Aggressive scalper",
+    "lab": "Lab",
 }
 MODE_BLURBS = {
-    "standard": "Wall Street-style marathon trader: trusts the process, no greed. Only A-grade setups in the "
-                "direction of the H1 trend, 0.75% risk, max 3 trades a day, done for the day at +1.5% or -2% "
-                "or after 2 losses in a row. Steady growth of 0.5-1.5% on good days, 0% on quiet ones.",
-    "moderate": "Professional swing/day trader, happy with steady growth over months: 1% risk, max 4 trades "
-                "a day, done for the day at +2.5% or -2.5%, half risk after 2 losses in a row.",
-    "aggressive": "Professional small-account scaler on M5: hunts clean entries, takes quick profits and gets "
-                  "out. 2% risk, max 8 trades a day, risk halves after +3% and it stops at +5% or -5%. "
-                  "Skips trades where the spread eats too much of the stop. Takes risk, never blows the account.",
+    "standard": "Patient professional: trades only the setup that made money in both of the last 2 years - "
+                "GOLD's Asian-range breakout on M15 with the H1 trend and SMC filters. 1% risk (0.01 lot of gold "
+                "is ~3-5% at $250), max 2 trades a day, done for the day after 2 losses. Backtest: +29% in 2 years.",
+    "moderate": "Professional swing/day trader: the same gold edge with 1.5% risk plus a trial of BTC's London "
+                "opening-range breakout. Breakeven at +1.5R, half risk after 2 losses. Backtest: gold +45% in 2 years.",
+    "aggressive": "Small-account scaler: the gold edge with 2.5% risk so lots grow fastest as the account grows, "
+                  "stop to breakeven at +1R, profits taken when momentum stalls, risk halved after a +4% day. "
+                  "Backtest: +27% in 2 years.",
+    "lab": "Research account: takes EVERY signal from every strategy with no AI, no filters and no daily caps, "
+           "so there is always activity and live data on what works. Not a strategy to copy.",
 }
 SYMBOLS = ["XAU_USD", "EUR_USD", "GBP_USD", "USD_JPY", "BTC_USDT"]
 
@@ -47,76 +50,117 @@ DEFAULT_FEEDS = [
     "https://www.fxstreet.com/rss/news",
 ]
 
+# Built from the 2-year backtest (Oct 2024 - Oct 2026, XM Standard costs): the edge that held in BOTH
+# years is GOLD's Asian-range breakout on M15 with the H1-trend + SMC filters (+0.14..0.18R per trade in
+# every mode). The M5 "edges" (gold breakout, BTC NY opening range) disappeared with real $250 sizing,
+# so all accounts run on M15. Everything else lost money after costs, so each account trades only its
+# allowlist; Moderate also trials BTC's London opening-range breakout (about flat over 2 years).
+# At $250 a 0.01 lot of gold risks ~3-5%, so every mode must accept the minimum lot on gold.
+STALL_FAST = {"stall_exit": True, "stall_min_progress": 0.35, "stall_candles": 3, "stall_range_atr": 0.8}
+
 MODE_DEFAULTS: dict[str, dict[str, Any]] = {
     "standard": {
         "enabled": True,
         "timeframe": "15m",
         "risk": {
-            "risk_per_trade_pct": 0.75,
-            "min_lot_rule": "skip", "min_lot_max_risk_pct": 1.0,
-            "max_leverage_forex": 10.0, "max_leverage_metal": 5.0, "max_leverage_crypto": 3.0,
+            "risk_per_trade_pct": 1.0,
+            "min_lot_rule": "allow", "min_lot_max_risk_pct": 5.0,
+            "max_leverage_forex": 10.0, "max_leverage_metal": 20.0, "max_leverage_crypto": 5.0,
             "max_margin_used_pct": 50.0,
             "max_open_positions": 2, "max_usd_forex_positions": 1,
-            "daily_loss_limit_pct": 2.0, "weekly_loss_limit_pct": 5.0,
-            "kill_switch_drawdown_pct": 15.0, "daily_profit_target_pct": 1.5,
-            "profit_half_risk_at_pct": 0.0, "max_trades_per_day": 3,
+            "daily_loss_limit_pct": 5.0, "weekly_loss_limit_pct": 10.0,
+            "kill_switch_drawdown_pct": 25.0, "daily_profit_target_pct": 4.0,
+            "profit_half_risk_at_pct": 0.0, "max_trades_per_day": 2,
             "loss_streak": 2, "loss_streak_action": "stop_day", "max_spread_stop_pct": 0.0,
         },
         "exits": {"default_stop_atr": 1.5, "default_target_atr": 3.0, "min_stop_atr": 1.0,
-                  "max_stop_atr": 3.0, "min_reward_risk": 2.0, "breakeven_at_r": 0.0},
+                  "max_stop_atr": 3.0, "min_reward_risk": 2.0, "breakeven_at_r": 0.0, **STALL_FAST},
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": False,
                     "range_reversion": True, "momentum_breakout": True, "session_filter": True,
-                    "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True},
+                    "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
+                    "london_orb": False, "ny_orb": True, "pdh_breakout": False,
+                    "allowlist": ["XAU_USD:session_breakout"]},
         "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True},
-        "ai": {"min_confidence": 0.6, "when_unavailable": "skip"},
+        "ai": {"use_ai": True, "min_confidence": 0.55, "when_unavailable": "rules_only"},
         "weekend": {"mode": "close", "minutes_before_close": 30, "no_new_trades_minutes": 120},
     },
     "moderate": {
         "enabled": True,
         "timeframe": "15m",
         "risk": {
-            "risk_per_trade_pct": 1.0,
-            "min_lot_rule": "allow", "min_lot_max_risk_pct": 2.0,
-            "max_leverage_forex": 20.0, "max_leverage_metal": 10.0, "max_leverage_crypto": 5.0,
+            "risk_per_trade_pct": 1.5,
+            "min_lot_rule": "allow", "min_lot_max_risk_pct": 6.0,
+            "max_leverage_forex": 20.0, "max_leverage_metal": 25.0, "max_leverage_crypto": 5.0,
             "max_margin_used_pct": 60.0,
             "max_open_positions": 3, "max_usd_forex_positions": 2,
-            "daily_loss_limit_pct": 2.5, "weekly_loss_limit_pct": 7.0,
-            "kill_switch_drawdown_pct": 20.0, "daily_profit_target_pct": 2.5,
-            "profit_half_risk_at_pct": 0.0, "max_trades_per_day": 4,
+            "daily_loss_limit_pct": 6.0, "weekly_loss_limit_pct": 12.0,
+            "kill_switch_drawdown_pct": 30.0, "daily_profit_target_pct": 5.0,
+            "profit_half_risk_at_pct": 0.0, "max_trades_per_day": 3,
             "loss_streak": 2, "loss_streak_action": "half_risk", "max_spread_stop_pct": 0.0,
         },
         "exits": {"default_stop_atr": 1.5, "default_target_atr": 2.5, "min_stop_atr": 1.0,
-                  "max_stop_atr": 3.0, "min_reward_risk": 1.5, "breakeven_at_r": 1.5},
+                  "max_stop_atr": 3.0, "min_reward_risk": 1.5, "breakeven_at_r": 1.5, **STALL_FAST},
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": True,
                     "range_reversion": True, "momentum_breakout": True, "session_filter": True,
-                    "htf_trend_filter": False, "liquidity_sweep": False, "smc_filter": True},
+                    "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
+                    "london_orb": True, "ny_orb": True, "pdh_breakout": False,
+                    "allowlist": ["XAU_USD:session_breakout", "BTC_USDT:london_orb"]},
         "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True},
-        "ai": {"min_confidence": 0.55, "when_unavailable": "rules_only"},
+        "ai": {"use_ai": True, "min_confidence": 0.5, "when_unavailable": "rules_only"},
         "weekend": {"mode": "halve", "minutes_before_close": 30, "no_new_trades_minutes": 90},
     },
     "aggressive": {
         "enabled": True,
-        "timeframe": "5m",
+        "timeframe": "15m",
         "risk": {
-            "risk_per_trade_pct": 2.0,
-            "min_lot_rule": "allow", "min_lot_max_risk_pct": 5.0,
-            "max_leverage_forex": 30.0, "max_leverage_metal": 20.0, "max_leverage_crypto": 10.0,
+            "risk_per_trade_pct": 2.5,
+            "min_lot_rule": "allow", "min_lot_max_risk_pct": 6.0,
+            "max_leverage_forex": 30.0, "max_leverage_metal": 30.0, "max_leverage_crypto": 10.0,
             "max_margin_used_pct": 70.0,
-            "max_open_positions": 4, "max_usd_forex_positions": 3,
-            "daily_loss_limit_pct": 5.0, "weekly_loss_limit_pct": 12.0,
-            "kill_switch_drawdown_pct": 25.0, "daily_profit_target_pct": 5.0,
-            "profit_half_risk_at_pct": 3.0, "max_trades_per_day": 8,
-            "loss_streak": 2, "loss_streak_action": "half_risk", "max_spread_stop_pct": 15.0,
+            "max_open_positions": 3, "max_usd_forex_positions": 2,
+            "daily_loss_limit_pct": 7.0, "weekly_loss_limit_pct": 15.0,
+            "kill_switch_drawdown_pct": 35.0, "daily_profit_target_pct": 6.0,
+            "profit_half_risk_at_pct": 4.0, "max_trades_per_day": 6,
+            "loss_streak": 3, "loss_streak_action": "half_risk", "max_spread_stop_pct": 15.0,
         },
-        "exits": {"default_stop_atr": 1.2, "default_target_atr": 1.8, "min_stop_atr": 0.8,
-                  "max_stop_atr": 2.0, "min_reward_risk": 1.2, "breakeven_at_r": 1.0},
+        "exits": {"default_stop_atr": 1.5, "default_target_atr": 2.5, "min_stop_atr": 1.0,
+                  "max_stop_atr": 3.0, "min_reward_risk": 1.5, "breakeven_at_r": 1.0, **STALL_FAST},
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": True,
                     "range_reversion": True, "momentum_breakout": True, "session_filter": True,
-                    "htf_trend_filter": False, "liquidity_sweep": False, "smc_filter": True},
+                    "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
+                    "london_orb": False, "ny_orb": True, "pdh_breakout": False,
+                    "allowlist": ["XAU_USD:session_breakout"]},
         "adaptive": {"enabled": True, "min_trades": 12, "auto_tune": True},
-        "ai": {"min_confidence": 0.5, "when_unavailable": "rules_only"},
+        "ai": {"use_ai": True, "min_confidence": 0.5, "when_unavailable": "rules_only"},
         "weekend": {"mode": "close", "minutes_before_close": 45, "no_new_trades_minutes": 60},
     },
+}
+
+# Lab: takes every signal (no AI, no filters, no daily caps) - activity + live data on every strategy.
+MODE_DEFAULTS["lab"] = {
+    "enabled": True,
+    "timeframe": "15m",
+    "risk": {
+        "risk_per_trade_pct": 1.0,
+        "min_lot_rule": "allow", "min_lot_max_risk_pct": 8.0,
+        "max_leverage_forex": 50.0, "max_leverage_metal": 30.0, "max_leverage_crypto": 10.0,
+        "max_margin_used_pct": 80.0,
+        "max_open_positions": 6, "max_usd_forex_positions": 3,
+        "daily_loss_limit_pct": 15.0, "weekly_loss_limit_pct": 30.0,
+        "kill_switch_drawdown_pct": 50.0, "daily_profit_target_pct": 0.0,
+        "profit_half_risk_at_pct": 0.0, "max_trades_per_day": 50,
+        "loss_streak": 0, "loss_streak_action": "half_risk", "max_spread_stop_pct": 0.0,
+    },
+    "exits": {"default_stop_atr": 1.5, "default_target_atr": 2.5, "min_stop_atr": 1.0,
+              "max_stop_atr": 3.0, "min_reward_risk": 1.5, "breakeven_at_r": 1.0,
+              "stall_exit": True, "stall_min_progress": 0.5, "stall_candles": 4, "stall_range_atr": 1.0},
+    "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": True,
+                "range_reversion": True, "momentum_breakout": True, "session_filter": True,
+                "htf_trend_filter": False, "liquidity_sweep": True, "smc_filter": False,
+                "london_orb": True, "ny_orb": True, "pdh_breakout": True, "allowlist": []},
+    "adaptive": {"enabled": False, "min_trades": 15, "auto_tune": False},
+    "ai": {"use_ai": False, "min_confidence": 0.0, "when_unavailable": "rules_only"},
+    "weekend": {"mode": "close", "minutes_before_close": 30, "no_new_trades_minutes": 60},
 }
 
 DEFAULTS: dict[str, Any] = {
@@ -241,7 +285,7 @@ MODE_FIELDS: list[Field] = [
     Field("risk.max_leverage_metal", "Max effective leverage - GOLD", "Risk", "float", 1, 30, 1),
     Field("risk.max_leverage_crypto", "Max effective leverage - BTCUSD", "Risk", "float", 1, 10, 1),
     Field("risk.max_margin_used_pct", "Max margin used (%)", "Risk", "float", 5, 80, 5),
-    Field("risk.max_open_positions", "Max open positions", "Risk", "int", 1, 5, 1),
+    Field("risk.max_open_positions", "Max open positions", "Risk", "int", 1, 6, 1),
     Field("risk.max_usd_forex_positions", "Max USD forex positions", "Risk", "int", 1, 3, 1),
     Field("risk.daily_loss_limit_pct", "Daily loss limit (%)", "Limits", "float", 0.5, 15, 0.5),
     Field("risk.weekly_loss_limit_pct", "Weekly loss limit (%)", "Limits", "float", 1, 30, 0.5),
@@ -264,6 +308,14 @@ MODE_FIELDS: list[Field] = [
     Field("exits.min_reward_risk", "Min reward : risk", "Stops & targets", "float", 0.5, 5, 0.1),
     Field("exits.breakeven_at_r", "Move stop to breakeven at +R", "Stops & targets", "float", 0, 5, 0.1,
           help="0 = off. E.g. 1.0: at +1R the stop moves to entry, so the trade can't become a loss."),
+    Field("exits.stall_exit", "Take profit when momentum stalls", "Stops & targets", "bool",
+          help="Human instinct: in profit, no new high/low for N candles and price is just consolidating -> "
+               "take what we have and look for the next setup."),
+    Field("exits.stall_min_progress", "...once this share of the target is reached", "Stops & targets", "float", 0.1, 0.95, 0.05,
+          help="0.5 = halfway to the take-profit."),
+    Field("exits.stall_candles", "...and no progress for N candles", "Stops & targets", "int", 2, 12, 1),
+    Field("exits.stall_range_atr", "...while those candles stay within x ATR", "Stops & targets", "float", 0.3, 3, 0.1,
+          help="Tight range = consolidation. A sharp move against the trade is left to the stop."),
     Field("signals.trend_pullback", "Trend pullback signal", "Signals", "bool"),
     Field("signals.session_breakout", "Session breakout signal", "Signals", "bool"),
     Field("signals.news_momentum", "News momentum signal", "Signals", "bool"),
@@ -271,6 +323,15 @@ MODE_FIELDS: list[Field] = [
           help="Ranging markets: fade a poke outside the Bollinger band back to the middle."),
     Field("signals.momentum_breakout", "Momentum breakout signal", "Signals", "bool",
           help="Trending/volatile markets: strong close beyond the 20-candle high/low."),
+    Field("signals.london_orb", "London opening-range breakout", "Signals", "bool",
+          help="First close beyond the first hour of London (08:00-09:00 London time), within 3 hours."),
+    Field("signals.ny_orb", "New York opening-range breakout", "Signals", "bool",
+          help="First close beyond the first hour after the NY open (09:30-10:30 NY time), within 3 hours."),
+    Field("signals.pdh_breakout", "Previous-day high/low breakout", "Signals", "bool",
+          help="First close of the day beyond yesterday's high/low with a strong candle."),
+    Field("signals.allowlist", "Only these symbol:strategy pairs (one per line)", "Signals", "list",
+          help="Empty = every enabled strategy on every symbol. Otherwise e.g. XAU_USD:session_breakout, "
+               "BTC_USDT:*, *:ny_orb. Built from the 2-year backtest: pairs that made money in both years."),
     Field("signals.liquidity_sweep", "Liquidity sweep signal (SMC)", "Signals", "bool",
           help="A previous-day/session high or low (or equal highs/lows) is swept and the candle closes back "
                "inside with a rejection wick. Stop beyond the wick, target the opposite liquidity. Off by default: "
@@ -289,6 +350,8 @@ MODE_FIELDS: list[Field] = [
     Field("adaptive.auto_tune", "Weekly self-tuning of stops/targets (tested first)", "Self-learning", "bool",
           help="Every Saturday, tries nearby stop/target/breakeven settings on recent history and applies "
                "the best ONLY if it also wins on newer data it wasn't tuned on."),
+    Field("ai.use_ai", "Ask Claude before trades", "AI", "bool",
+          help="Off = rules only, no AI cost (the Lab account). The daily review and playbook are skipped too."),
     Field("ai.min_confidence", "Min AI confidence", "AI", "float", 0, 1, 0.05),
     Field("ai.when_unavailable", "When AI is off / over budget", "AI", "choice", choices=["rules_only", "skip"]),
     Field("weekend.mode", "Friday close: gold/forex positions", "Weekend", "choice", choices=["close", "halve", "hold"]),
@@ -418,6 +481,13 @@ class SettingsStore:
                     data["broker"][f"spread_{sym}"] = DEFAULTS["broker"][f"spread_{sym}"]
             if data["ai"]["monthly_budget_usd"] <= 2.0:
                 data["ai"]["monthly_budget_usd"] = DEFAULTS["ai"]["monthly_budget_usd"]
+        if version < 3:
+            # v3: modes rebuilt from the 2-year backtest (allowlists, gold min-lot, stall exit), Lab account added
+            data["modes"] = copy.deepcopy(MODE_DEFAULTS)
+            from .ai.review import SEED_PLAYBOOKS
+            for mode, text in SEED_PLAYBOOKS.items():
+                self.db.execute("INSERT INTO playbook_versions(mode, at, content, source) VALUES (?,?,?,?)",
+                                (mode, iso(), text, "seed-v3"))
         self.save(data, f"upgrade:defaults-v{DEFAULTS_VERSION}")
         self.db.kv_set("settings_defaults_version", DEFAULTS_VERSION)
 

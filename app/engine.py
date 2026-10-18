@@ -23,6 +23,7 @@ from .ai.review import current_playbook
 from .alerts import Telegram
 from .broker import PaperBroker
 from .db import DB, iso
+from .exits import stall_exit
 from .feeds import fetch_candles
 from .feeds.prices import PriceCache, Quote, load_candles, store_candles, tf_seconds
 from .indicators import atr as atr_series
@@ -58,6 +59,7 @@ class Engine:
         self.last_check: dict[tuple[str, str], str] = {}           # (account, symbol) -> last filter result
         self.last_atr: dict[tuple[str, str], tuple[int, float]] = {}  # (symbol, tf) -> (candle t, ATR)
         self.regimes: dict[tuple[str, str], str] = {}              # (symbol, tf) -> "trend (ADX 31, ...)"
+        self.last_manage: dict[int, int] = {}                      # position id -> last candle checked
         self._signal_lock = asyncio.Lock()
 
     def cfg(self, account: str) -> dict:
@@ -182,6 +184,7 @@ class Engine:
         now = datetime.now(timezone.utc)
         await self._rollover(now)
         await self._refresh_candles(now)
+        await self._manage_positions(now)
         await self._weekend(now)
         await self._feed_health(now)
         await self._evaluate_signals(now)
@@ -219,6 +222,33 @@ class Engine:
                         store_candles(self.db, sym, candles, tf)
                 except Exception as e:  # noqa: BLE001
                     log.warning("candle refresh %s %s failed: %s", sym, tf, e)
+
+    async def _manage_positions(self, now: datetime) -> None:
+        """On each newly closed candle: the "human instinct" stall exit (exits.stall_exit)."""
+        for m in MODES:
+            cfg = self.cfg(m)
+            if not cfg["exits"].get("stall_exit"):
+                continue
+            tf = cfg["timeframe"]
+            sec = tf_seconds(tf)
+            for p in self.broker.positions(m):
+                if not market_open(INSTRUMENTS[p["symbol"]], now):
+                    continue
+                rows = load_candles(self.db, p["symbol"], 300 if tf == "15m" else 600, tf)
+                if not rows or self.last_manage.get(p["id"]) == rows[-1]["t"]:
+                    continue
+                self.last_manage[p["id"]] = rows[-1]["t"]
+                opened = int(datetime.fromisoformat(p["opened_at"]).timestamp())
+                bars = [r for r in rows if r["t"] >= opened - opened % sec]
+                atr = self.current_atr(p["symbol"], tf)
+                why = stall_exit(p["side"], p["entry"], p["target"], bars, atr or 0, cfg) if atr else None
+                if not why:
+                    continue
+                t = self.broker.close_at_market(cfg, p, why)
+                if t:
+                    log.info("[%s] #%s %s", m, p["id"], why)
+                    await self._alert_close(t)
+                    await self.learn(m)
 
     async def _weekend(self, now: datetime) -> None:
         mins = minutes_to_weekly_close(now)
@@ -374,7 +404,7 @@ class Engine:
 
         ai_reply, ai_used, reason = None, False, sig.note
         stop_atr, target_atr = sig.stop_atr, sig.target_atr      # structure stop/target if the strategy has one
-        block = self.ai.budget_block(cfg)
+        block = self.ai.budget_block(cfg) if cfg["ai"].get("use_ai", True) else "AI off for this account"
         if block:
             if cfg["ai"]["when_unavailable"] != "rules_only":
                 self._record(account, sig, False, f"AI unavailable ({block}) and this mode skips without AI")

@@ -51,7 +51,7 @@
   </section>
 
   <section class="card compare" id="compare">
-    <div class="card-head"><h2>Compare accounts</h2><span class="muted">same live prices, three rule sets</span></div>
+    <div class="card-head"><h2>Compare accounts</h2><span class="muted">same live prices, four rule sets (Lab = takes every signal, for research)</span></div>
     <div class="card-body">
       <div class="cards" id="cmp-cards"></div>
       <div id="cmp-chart"></div>
@@ -61,8 +61,8 @@
 </div>
 
 <script>
-const LABEL = { standard: "Standard", moderate: "Moderate", aggressive: "Aggressive" };
-const MODES = ["standard", "moderate", "aggressive"];
+const LABEL = { standard: "Standard", moderate: "Moderate", aggressive: "Aggressive", lab: "Lab" };
+const MODES = ["standard", "moderate", "aggressive", "lab"];
 const TF_SEC = { "5m": 300, "15m": 900 };
 const store = { get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (_) { return d; } },
                 set(k, v) { try { localStorage.setItem(k, v); } catch (_) {} } };
@@ -98,7 +98,7 @@ function renderAccounts(accounts) {
   if (!nav.childElementCount) {
     nav.innerHTML = MODES.map((m) => `<button class="acct" data-acc="${m}"><span class="dot"></span><span class="name">${LABEL[m]}</span>
         <span class="chip tf"></span><span class="eq"></span><span class="chg"></span></button>`).join("") +
-      `<button class="acct" data-acc="compare"><span class="name">⚖ Compare</span></button>`;
+      `<button class="acct" data-acc="compare"><span class="name">Compare</span></button>`;
     nav.querySelectorAll(".acct").forEach((b) => (b.onclick = () => selectAccount(b.dataset.acc)));
   }
   nav.querySelectorAll(".acct").forEach((b) => b.classList.toggle("active", b.dataset.acc === acc));
@@ -337,7 +337,7 @@ async function historyTable() {
 async function journalTable() {
   const rows = await api(`/api/decisions?account=${acc}&limit=150`);
   if (!rows.length) return `<div class="empty">No signals yet. The engine checks every closed ${tfLabel(state.account.timeframe)} candle.</div>`;
-  const ai = (r) => { if (!r.ai_used) return '<span class="faint">rules</span>';
+  const ai = (r) => { if (!r.ai_used) return `<span class="faint">${r.accepted ? "rules only" : "–"}</span>`;
     return (r.ai_reply || "").includes('"sonnet"') ? '<span class="chip ok">Haiku + Sonnet</span>' : '<span class="chip">Haiku</span>'; };
   return `<table><tr><th>Time</th><th>Symbol</th><th>Type</th><th>Strategy</th><th>Regime</th><th>AI</th><th>Result</th><th>Why the signal fired</th></tr>` +
     rows.map((r) => `<tr><td class="num">${mtTime(r.at)}</td><td>${state.quotes[r.symbol]?.xm || r.symbol}</td><td>${sideTag(r.side)}</td>
@@ -513,7 +513,7 @@ async function loadCompare() {
   cmpChart = LightweightCharts.createChart(el, { layout: { background: { color: "transparent" }, textColor: "#8790a3", fontFamily: "Inter, sans-serif" },
     grid: { vertLines: { color: "rgba(255,255,255,.03)" }, horzLines: { color: "rgba(255,255,255,.03)" } },
     timeScale: { timeVisible: true, borderColor: "#232a38" }, rightPriceScale: { borderColor: "#232a38" }, autoSize: true });
-  const colors = { standard: "#3b82f6", moderate: "#a78bfa", aggressive: "#f59e0b" };
+  const colors = { standard: "#3b82f6", moderate: "#a78bfa", aggressive: "#f59e0b", lab: "#64748b" };
   const t = (iso) => Math.floor(new Date(iso).getTime() / 1000);
   for (const m of MODES) {
     const s = cmpChart.addLineSeries({ color: colors[m], lineWidth: 2, title: LABEL[m] });

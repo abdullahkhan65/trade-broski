@@ -11,26 +11,28 @@ from app.settings_store import DEFAULTS, DEFAULTS_VERSION, MODE_DEFAULTS, MODES,
 from app.signals import htf_trend
 
 
-def cfg(mode="standard"):
-    return cfg_for(validate(DEFAULTS), mode)
+def cfg(mode="standard", **risk_overrides):
+    c = cfg_for(validate(DEFAULTS), mode)
+    c["risk"] = {**c["risk"], **risk_overrides}
+    return c
 
 
 # ------------------------------------------------------------ day rules
 def test_max_trades_per_day():
-    c = cfg("standard")
+    c = cfg("standard", max_trades_per_day=3)
     assert risk.day_rules(c, 0.0, 2, 0)[0] is None
     assert "max 3 trades" in risk.day_rules(c, 0.0, 3, 0)[0]
 
 
 def test_loss_streak_stop_day_vs_half_risk():
-    block, mult, _ = risk.day_rules(cfg("standard"), -1.0, 2, 2)
+    block, mult, _ = risk.day_rules(cfg("standard", loss_streak=2, loss_streak_action="stop_day"), -1.0, 1, 2)
     assert "done for the day" in block
-    block, mult, note = risk.day_rules(cfg("moderate"), -1.0, 2, 2)
+    block, mult, note = risk.day_rules(cfg("moderate", loss_streak=2, loss_streak_action="half_risk"), -1.0, 2, 2)
     assert block is None and mult == 0.5 and "losses in a row" in note
 
 
-def test_aggressive_halves_risk_after_plus_3_pct():
-    c = cfg("aggressive")
+def test_aggressive_halves_risk_after_a_good_day():
+    c = cfg("aggressive", profit_half_risk_at_pct=3.0, loss_streak=2)
     assert risk.day_rules(c, 2.9, 1, 0)[1] == 1.0
     assert risk.day_rules(c, 3.1, 1, 0)[1] == 0.5
     assert risk.day_rules(c, 3.1, 1, 2)[1] == 0.25        # good day AND a losing streak
@@ -44,20 +46,24 @@ def test_losses_in_row_ignores_breakeven():
 
 
 def test_cost_filter():
-    c = cfg("aggressive")                          # 15% max, default stop 1.2 ATR
-    # BTC M5: ATR $150 -> stop $180; $40 spread = 22% of the stop -> skip
-    assert "spread is 22%" in risk.spread_check(c, 40.0, 150.0)
-    assert risk.spread_check(c, 40.0, 300.0) is None          # 11%
+    c = cfg("aggressive")                          # 15% max, default stop 1.5 ATR
+    # BTC: ATR $100 -> stop $150; $40 spread = 27% of the stop -> skip
+    assert "spread is 27%" in risk.spread_check(c, 40.0, 100.0)
+    assert risk.spread_check(c, 40.0, 300.0) is None          # 9%
     assert risk.spread_check(cfg("standard"), 40.0, 150.0) is None   # filter off in standard
 
 
-def test_modes_match_agreed_table():
-    s, m, a = (MODE_DEFAULTS[x]["risk"] for x in MODES)
-    assert (s["daily_profit_target_pct"], m["daily_profit_target_pct"], a["daily_profit_target_pct"]) == (1.5, 2.5, 5.0)
-    assert (s["daily_loss_limit_pct"], m["daily_loss_limit_pct"], a["daily_loss_limit_pct"]) == (2.0, 2.5, 5.0)
-    assert (s["risk_per_trade_pct"], m["risk_per_trade_pct"], a["risk_per_trade_pct"]) == (0.75, 1.0, 2.0)
-    assert (s["max_trades_per_day"], m["max_trades_per_day"], a["max_trades_per_day"]) == (3, 4, 8)
-    assert (s["kill_switch_drawdown_pct"], m["kill_switch_drawdown_pct"], a["kill_switch_drawdown_pct"]) == (15, 20, 25)
+def test_modes_match_backtested_table():
+    s, m, a = (MODE_DEFAULTS[x]["risk"] for x in ("standard", "moderate", "aggressive"))
+    assert (s["daily_profit_target_pct"], m["daily_profit_target_pct"], a["daily_profit_target_pct"]) == (4.0, 5.0, 6.0)
+    assert (s["daily_loss_limit_pct"], m["daily_loss_limit_pct"], a["daily_loss_limit_pct"]) == (5.0, 6.0, 7.0)
+    assert (s["risk_per_trade_pct"], m["risk_per_trade_pct"], a["risk_per_trade_pct"]) == (1.0, 1.5, 2.5)
+    assert (s["max_trades_per_day"], m["max_trades_per_day"], a["max_trades_per_day"]) == (2, 3, 6)
+    assert (s["kill_switch_drawdown_pct"], m["kill_switch_drawdown_pct"], a["kill_switch_drawdown_pct"]) == (25, 30, 35)
+    # every real account trades the backtested gold edge, so all must accept gold's minimum lot
+    for x in (s, m, a):
+        assert x["min_lot_rule"] == "allow" and x["min_lot_max_risk_pct"] >= 5.0
+    assert "XAU_USD:session_breakout" in MODE_DEFAULTS["standard"]["signals"]["allowlist"]
     assert MODE_DEFAULTS["standard"]["signals"]["htf_trend_filter"] is True
 
 
@@ -85,8 +91,8 @@ def test_second_opinion_triggers():
     a, s = cfg("aggressive"), cfg("standard")
     assert "risk" in gate.needs_second_opinion(a, 2.0, False, 0.8)
     assert "0.01 lot" in gate.needs_second_opinion(s, 0.7, True, 0.9)
-    assert "borderline" in gate.needs_second_opinion(s, 0.7, False, 0.65)    # min 0.6 + 0.1
-    assert gate.needs_second_opinion(s, 0.7, False, 0.8) is None
+    assert "borderline" in gate.needs_second_opinion(s, 0.7, False, s["ai"]["min_confidence"] + 0.05)
+    assert gate.needs_second_opinion(s, 0.7, False, 0.9) is None
     a["ai"]["second_opinion"] = False
     assert gate.needs_second_opinion(a, 3.0, True, 0.5) is None
 
@@ -125,8 +131,9 @@ def test_old_saved_settings_get_new_defaults_once():
     old["ai"]["monthly_budget_usd"] = 2.0
     db.execute("INSERT INTO settings_versions(at, source, data) VALUES (?,?,?)", (iso(), "ui", json.dumps(old)))
     store = SettingsStore(db)
-    assert store.cfg("standard")["risk"]["risk_per_trade_pct"] == 0.75
-    assert store.cfg("standard")["risk"]["daily_profit_target_pct"] == 1.5
+    assert store.cfg("standard")["risk"]["risk_per_trade_pct"] == MODE_DEFAULTS["standard"]["risk"]["risk_per_trade_pct"]
+    assert store.cfg("standard")["risk"]["daily_profit_target_pct"] == MODE_DEFAULTS["standard"]["risk"]["daily_profit_target_pct"]
+    assert "lab" in store.current["modes"]
     assert store.current["broker"]["spread_XAU_USD"] == 50
     assert store.current["broker"]["spread_BTC_USDT"] == 4100
     assert store.current["ai"]["monthly_budget_usd"] == 6.0
@@ -136,3 +143,16 @@ def test_old_saved_settings_get_new_defaults_once():
     data["modes"]["standard"]["risk"]["risk_per_trade_pct"] = 0.5
     store.save(data)
     assert SettingsStore(db).cfg("standard")["risk"]["risk_per_trade_pct"] == 0.5
+
+
+def test_upgrade_from_v2_server_adds_lab_allowlists_and_new_playbooks():
+    db = DB(":memory:")
+    old = validate(DEFAULTS)
+    old["modes"]["standard"]["signals"]["allowlist"] = []
+    db.execute("INSERT INTO settings_versions(at, source, data) VALUES (?,?,?)", (iso(), "ui", json.dumps(old)))
+    db.kv_set("settings_defaults_version", 2)
+    store = SettingsStore(db)
+    assert store.cfg("standard")["signals"]["allowlist"] == ["XAU_USD:session_breakout"]
+    assert store.cfg("lab")["ai"]["use_ai"] is False
+    assert db.scalar("SELECT COUNT(*) FROM playbook_versions WHERE source='seed-v3'") == len(MODES)
+    assert db.kv_get("settings_defaults_version") == 3
