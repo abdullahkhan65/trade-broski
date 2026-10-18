@@ -63,21 +63,36 @@ async def download(symbol: str, days: int, tf: str) -> list[dict]:
     return [out[t] for t in sorted(out)]
 
 
+KEEP_DAYS = 800          # history files keep up to ~2 years; shorter refreshes merge into them
+
+
 def load_history(symbol: str, days: int, tf: str, refresh: bool) -> list[dict]:
+    """Cached history. A refresh downloads only what's missing at the end (or the full `days` if the
+    file is too short) and MERGES it, so a 60-day tuner refresh never wipes the 2-year file."""
     HIST.mkdir(parents=True, exist_ok=True)
     path = HIST / f"{symbol}-{tf}.csv"
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
-    if path.exists() and not refresh:
+    now = datetime.now(timezone.utc).timestamp()
+    cutoff = now - days * 86400
+    rows: list[dict] = []
+    if path.exists():
         with path.open() as fh:
             rows = [{k: (int(v) if k == "t" else float(v)) for k, v in r.items()} for r in csv.DictReader(fh)]
-        if rows and rows[0]["t"] <= cutoff + 7 * 86400:
-            return [r for r in rows if r["t"] >= cutoff]
-    rows = asyncio.run(download(symbol, days, tf))
+    covers_start = bool(rows) and rows[0]["t"] <= cutoff + 7 * 86400
+    if covers_start and not refresh:
+        return [r for r in rows if r["t"] >= cutoff]
+    if covers_start:      # refresh: only fetch from the last cached day onwards
+        fetch_days = max(2, int((now - rows[-1]["t"]) / 86400) + 2)
+    else:
+        fetch_days = days
+    merged = {r["t"]: r for r in rows}
+    merged.update({r["t"]: r for r in asyncio.run(download(symbol, fetch_days, tf))})
+    keep_from = now - KEEP_DAYS * 86400
+    rows = [merged[t] for t in sorted(merged) if t >= keep_from]
     with path.open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["t", "o", "h", "l", "c", "v"])
         w.writeheader()
         w.writerows(rows)
-    return rows
+    return [r for r in rows if r["t"] >= cutoff]
 
 
 def load_settings() -> dict:

@@ -23,7 +23,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import adaptive, scorecard, smc
+from . import adaptive, promoter, scorecard, shadow, smc
+from .ai import research
 from .ai.client import AIClient
 from .ai.review import current_playbook, daily_review, weekly_playbook
 from .alerts import telegram
@@ -153,6 +154,11 @@ def schedule_jobs() -> None:
     # weekly self-tuning on Saturday morning UTC (forex closed, server quiet)
     scheduler.add_job(job_tune, CronTrigger(day_of_week="sat", hour=6, minute=0), misfire_grace_time=3600,
                       coalesce=True)
+    scheduler.add_job(job_shadow, IntervalTrigger(minutes=15), misfire_grace_time=300, coalesce=True,
+                      next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2))
+    # Sunday 04:00 UTC: markets closed, before the 12:00 playbook rewrite (which then sees the proposals)
+    scheduler.add_job(job_research, CronTrigger(day_of_week="sun", hour=4, minute=0), misfire_grace_time=3600,
+                      coalesce=True)
 
 
 _tuning: set[str] = set()
@@ -196,6 +202,59 @@ async def job_tune() -> None:
     for m in store.active_modes():
         if store.current["modes"][m]["adaptive"]["auto_tune"]:
             await run_tuner(m)
+
+
+async def job_shadow() -> None:
+    n = await asyncio.to_thread(shadow.resolve, db, store.current)
+    if n:
+        log.info("Shadow outcomes resolved for %d skipped signals", n)
+
+
+_researching = False
+
+
+async def run_research() -> dict:
+    """Weekly: Lab league table -> 2-year verification -> allowlist proposals; then Sonnet's review."""
+    global _researching
+    if _researching:
+        return {"started": False, "reason": "already running"}
+    _researching = True
+    made = []
+    try:
+        settings = store.current
+        for c in promoter.candidates(db, settings)[:promoter.MAX_VERIFY_PER_RUN]:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "nice", "-n", "10", sys.executable, "-m", "app.promoter", "verify", "--symbol", c["symbol"],
+                    "--strategy", c["strategy"], "--mode", c["account"], cwd=str(ROOT),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=2400)
+                res = json.loads(out.decode().strip().splitlines()[-1])
+            except Exception as e:  # noqa: BLE001
+                log.warning("research verify %s for %s failed: %s", c["item"], c["account"], e)
+                continue
+            log.info("research: %s for %s -> %s", c["item"], c["account"], res.get("reason"))
+            if res.get("passed"):
+                pid = promoter.propose(db, c["account"], "add", c["item"], {"lab": c["lab"], "backtest": res},
+                                       f"Lab {c['lab']['n']} trades avg {c['lab']['avg_r']:+.2f}R; 2-year test {res['reason']}")
+                made.append(f"➕ add {c['item']} to {MODE_LABELS[c['account']]} (#{pid})")
+        for rm in promoter.removals(db, settings):
+            pid = promoter.propose(db, rm["account"], "remove", rm["item"], {"live": rm["live"]},
+                                   f"losing live: {rm['live']['n']} trades, avg {rm['live']['avg_r']:+.2f}R in "
+                                   f"{rm['live']['days']} days")
+            made.append(f"➖ remove {rm['item']} from {MODE_LABELS[rm['account']]} (#{pid})")
+        if made:
+            await telegram.send("🔬 <b>New allowlist proposals</b> (approve in the Learning tab)\n" + "\n".join(made))
+        if settings["research"]["ai_review"]:
+            await telegram.send(await research.weekly_review(ai, db, settings, store.cfg("standard")))
+    finally:
+        _researching = False
+    return {"started": True, "proposals": made}
+
+
+async def job_research() -> None:
+    if store.current["research"]["enabled"]:
+        await run_research()
 
 
 # ========================================================= telegram commands
@@ -501,9 +560,40 @@ def api_learning(account: str = "standard", _: str = Depends(auth)) -> dict:
     by_regime = db.all("SELECT signal, regime, COUNT(*) n, AVG(pnl_r) avg_r, SUM(pnl_usd) pnl FROM trades "
                        "WHERE account=? GROUP BY signal, regime ORDER BY signal, regime", (account,))
     return {"timeframe": tf, "regimes": regimes, "states": adaptive.states(db, account), "by_regime": by_regime,
+            "skips": shadow.summary(db, account, days=30),
             "tuning": runs, "tuning_running": account in _tuning,
             "exits": {k: cfg["exits"][k] for k in ("default_stop_atr", "default_target_atr", "breakeven_at_r")},
             "adaptive": cfg["adaptive"]}
+
+
+@app.get("/api/research")
+def api_research(_: str = Depends(auth)) -> dict:
+    props = db.all("SELECT * FROM proposals ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, id DESC LIMIT 30")
+    for p in props:
+        p["evidence"] = json.loads(p["evidence"]) if p["evidence"] else None
+    return {"proposals": props, "lab": promoter.lab_table(db), "review": research.latest(db),
+            "running": _researching, "allowlists": {m: store.current["modes"][m]["signals"].get("allowlist") or []
+                                                    for m in MODES if m != "lab"}}
+
+
+@app.post("/api/research/run")
+async def api_research_run(_: str = Depends(auth)) -> dict:
+    if _researching:
+        return {"started": False, "reason": "already running"}
+    asyncio.create_task(run_research())
+    return {"started": True}
+
+
+@app.post("/api/proposals/{pid}/{action}")
+def api_proposal(pid: int, action: str, _: str = Depends(auth)) -> dict:
+    p = db.one("SELECT * FROM proposals WHERE id=?", (pid,))
+    if not p or p["status"] != "pending" or action not in ("approve", "reject"):
+        raise HTTPException(400, "No such pending proposal")
+    if action == "approve":
+        store.save(promoter.apply_proposal(store.current, p), f"proposal:{pid}")
+    db.execute("UPDATE proposals SET status=?, decided_at=? WHERE id=?",
+               ("approved" if action == "approve" else "rejected", iso(), pid))
+    return {"ok": True, "allowlist": store.current["modes"][p["account"]]["signals"].get("allowlist")}
 
 
 @app.post("/api/learning/reset")

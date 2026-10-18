@@ -80,7 +80,7 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
                     "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
                     "london_orb": False, "ny_orb": True, "pdh_breakout": False,
                     "allowlist": ["XAU_USD:session_breakout"]},
-        "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True},
+        "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True, "pool_lab": True},
         "ai": {"use_ai": True, "min_confidence": 0.55, "when_unavailable": "rules_only"},
         "weekend": {"mode": "close", "minutes_before_close": 30, "no_new_trades_minutes": 120},
     },
@@ -105,7 +105,7 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
                     "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
                     "london_orb": True, "ny_orb": True, "pdh_breakout": False,
                     "allowlist": ["XAU_USD:session_breakout", "BTC_USDT:london_orb"]},
-        "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True},
+        "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True, "pool_lab": True},
         "ai": {"use_ai": True, "min_confidence": 0.5, "when_unavailable": "rules_only"},
         "weekend": {"mode": "halve", "minutes_before_close": 30, "no_new_trades_minutes": 90},
     },
@@ -130,7 +130,7 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
                     "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
                     "london_orb": False, "ny_orb": True, "pdh_breakout": False,
                     "allowlist": ["XAU_USD:session_breakout"]},
-        "adaptive": {"enabled": True, "min_trades": 12, "auto_tune": True},
+        "adaptive": {"enabled": True, "min_trades": 12, "auto_tune": True, "pool_lab": True},
         "ai": {"use_ai": True, "min_confidence": 0.5, "when_unavailable": "rules_only"},
         "weekend": {"mode": "close", "minutes_before_close": 45, "no_new_trades_minutes": 60},
     },
@@ -158,7 +158,7 @@ MODE_DEFAULTS["lab"] = {
                 "range_reversion": True, "momentum_breakout": True, "session_filter": True,
                 "htf_trend_filter": False, "liquidity_sweep": True, "smc_filter": False,
                 "london_orb": True, "ny_orb": True, "pdh_breakout": True, "allowlist": []},
-    "adaptive": {"enabled": False, "min_trades": 15, "auto_tune": False},
+    "adaptive": {"enabled": False, "min_trades": 15, "auto_tune": False, "pool_lab": False},
     "ai": {"use_ai": False, "min_confidence": 0.0, "when_unavailable": "rules_only"},
     "weekend": {"mode": "close", "minutes_before_close": 30, "no_new_trades_minutes": 60},
 }
@@ -168,7 +168,7 @@ DEFAULTS: dict[str, Any] = {
     "instruments": {"XAU_USD": True, "EUR_USD": True, "GBP_USD": True, "USD_JPY": False, "BTC_USDT": True},
     "indicators": {
         "ema_fast": 20, "ema_slow": 50, "rsi_period": 14, "atr_period": 14,
-        "spike_atr_mult": 3.0, "dead_market_percentile": 20.0, "auto_disable_after_trades": 30,
+        "spike_atr_mult": 3.0, "dead_market_percentile": 20.0,
     },
     "ai": {"enabled": True, "max_calls_per_day": 120, "monthly_budget_usd": 6.0,
            "daily_review": True, "weekly_playbook": True,
@@ -192,6 +192,7 @@ DEFAULTS: dict[str, Any] = {
         "swap_BTC_USDT_long": -4000.0, "swap_BTC_USDT_short": -2000.0,
     },
     "engine": {"stop_check_seconds": 3},
+    "research": {"enabled": True, "min_lab_trades": 10, "min_lab_avg_r": 0.05, "ai_review": True},
     "modes": copy.deepcopy(MODE_DEFAULTS),
 }
 
@@ -227,8 +228,6 @@ FIELDS: list[Field] = [
     Field("indicators.spike_atr_mult", "News-spike filter (candle > x ATR)", "Indicators (all modes)", "float", 1.5, 10, 0.5),
     Field("indicators.dead_market_percentile", "Dead-market filter (ATR percentile)", "Indicators (all modes)",
           "float", 0, 50, 5, help="Skip when ATR is below this percentile of the last ~20 days."),
-    Field("indicators.auto_disable_after_trades", "Auto-disable losing signals after N trades", "Indicators (all modes)",
-          "int", 10, 500, 5, help="Per account: a signal with negative average R after N trades is switched off."),
     Field("ai.enabled", "Use Claude Haiku to approve trades", "AI (all modes)", "bool"),
     Field("ai.max_calls_per_day", "Max AI calls per day (all purposes)", "AI (all modes)", "int", 0, 300, 5),
     Field("ai.monthly_budget_usd", "AI monthly budget, Haiku + Sonnet ($)", "AI (all modes)", "float", 0, 8, 0.25,
@@ -270,6 +269,15 @@ FIELDS: list[Field] = [
             help="Copy from MT5 Specification. Negative = you pay. Defaults are estimates.")
       for s in SYMBOLS for d in ("long", "short")],
     Field("engine.stop_check_seconds", "Check stops every (sec)", "Engine", "int", 1, 60, 1),
+    Field("research.enabled", "Weekly Lab -> allowlist research", "Research (weekly)", "bool",
+          help="Sunday 04:00 UTC: Lab pairs doing well are re-tested on 2 years of history; ones that win in both "
+               "years are PROPOSED for an account's allowlist. Losing allowlisted pairs are proposed for removal. "
+               "Nothing changes until you approve it in the Learning tab."),
+    Field("research.min_lab_trades", "Lab trades needed before a pair is considered", "Research (weekly)", "int", 5, 200, 1),
+    Field("research.min_lab_avg_r", "...with an average of at least (R)", "Research (weekly)", "float", -1, 2, 0.05),
+    Field("research.ai_review", "Weekly research review by Sonnet", "Research (weekly)", "bool",
+          help="Sonnet reads the week's results, Lab league table, skipped-signal outcomes and proposals, and "
+               "writes a short review with recommendations (~$0.05 a week)."),
 ]
 
 MODE_FIELDS: list[Field] = [
@@ -347,6 +355,9 @@ MODE_FIELDS: list[Field] = [
                "switches losers off (with probation later) and halves risk on weak ones."),
     Field("adaptive.min_trades", "Trades needed before judging a strategy", "Self-learning", "int", 5, 100, 1,
           help="Per strategy per regime. Fewer = adapts faster but reacts to luck."),
+    Field("adaptive.pool_lab", "Also learn from the Lab's trades (half weight)", "Self-learning", "bool",
+          help="The Lab trades every signal, so it collects evidence much faster. Counts its trades of the same "
+               "strategy, regime and allowed symbols at half weight."),
     Field("adaptive.auto_tune", "Weekly self-tuning of stops/targets (tested first)", "Self-learning", "bool",
           help="Every Saturday, tries nearby stop/target/breakeven settings on recent history and applies "
                "the best ONLY if it also wins on newer data it wasn't tuned on."),

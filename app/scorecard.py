@@ -55,18 +55,5 @@ def disabled_for(db: DB, account: str, symbol: str) -> set[str]:
                                         (account, symbol))}
 
 
-def auto_disable(db: DB, account: str, cfg: dict) -> list[str]:
-    n_min = cfg["signals"]["auto_disable_after_trades"]
-    switched = []
-    for r in compute(db, account):
-        if r["disabled"] or r["n"] < n_min or r["avg_r"] is None:
-            continue
-        if r["avg_r"] < 0:
-            db.execute("INSERT OR IGNORE INTO disabled_signals(account, symbol, signal, at, reason) VALUES (?,?,?,?,?)",
-                       (account, r["symbol"], r["signal"], iso(), f"avg {r['avg_r']:+.2f}R after {r['n']} trades"))
-            switched.append(f"{r['symbol']} {r['signal']} ({r['avg_r']:+.2f}R over {r['n']} trades)")
-    return switched
-
-
 def enable(db: DB, account: str, symbol: str, signal: str) -> None:
     db.execute("DELETE FROM disabled_signals WHERE account=? AND symbol=? AND signal=?", (account, symbol, signal))

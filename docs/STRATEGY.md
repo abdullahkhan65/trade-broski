@@ -91,14 +91,17 @@ Gold on M15 (ATR ~$8 → stop $12): 0.01 lot already risks $12 = 4.8%. Standard 
 - **Friday close:** gold/forex positions are closed or halved before the weekend, per mode. A 0.01 lot can't be halved, so it's closed.
 - **Daily target / limits:** per account. Hitting the daily profit target or loss limit stops new trades until the next UTC day.
 
-## 7. Self-learning (per account): four loops
+## 7. Feedback engine: how the bot learns
 
-| Loop | When | What it changes | Costs AI? |
-|---|---|---|---|
-| **Playbook** | daily lessons, Sunday rewrite | How Haiku judges setups for this account | yes (cents) |
-| **Strategy switching by regime** | after every closed trade + daily | Which strategy may trade in which market regime, and at what risk | no |
-| **Weekly walk-forward tuning** | Saturday 06:00 UTC | Default stop / target / breakeven for the account | no |
-| **Trade log + scorecard** | every trade | The data all of the above learn from | no |
+| Loop | When | Learns from | Can change | AI cost |
+|---|---|---|---|---|
+| **Strategy switching** | after every closed trade + daily | the account's trades per strategy × regime, **plus the Lab's at half weight** (pooled) | switches a strategy off in a regime / halves its risk (never raises it) | none |
+| **Weekly tuning** | Saturday 06:00 UTC | 60 days of history, walk-forward | stop / target / breakeven, only if better on unseen data | none |
+| **Skipped-signal outcomes** | every 15 min | every signal the bot skipped, followed to stop/target/48h | nothing by itself: shows which skip reasons save money and which block winners (Learning tab), and feeds the daily AI review | none |
+| **Lab → allowlist research** | Sunday 04:00 UTC | the Lab's live league table, then a 2-year both-years test per candidate | **proposes** allowlist additions/removals; you approve in the Research tab | none |
+| **Daily lessons** | 00:05 UTC | the day's trades, skips **and what recent skips would have done** (Haiku) | lessons that feed the playbook | ~$0.01/day |
+| **Weekly playbook** | Sunday 12:00 UTC | the week's lessons + scorecard (Sonnet) | the rules Haiku/Sonnet read before every trade | ~$0.10/week |
+| **Weekly research review** | Sunday, after the research job | all of the above (Sonnet) | nothing: a written review with recommendations (Research tab + Telegram) | ~$0.05/week |
 
 ### Market regimes
 Every candle is labelled from ADX (trend strength) and where ATR sits in its 20-day range:

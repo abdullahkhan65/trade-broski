@@ -19,7 +19,7 @@
 - [x] Smart Money Concepts: PDH/PDL, session levels, liquidity pools, sweeps, FVG, order blocks; location filter, AI context, chart overlay; liquidity-sweep strategy (off until proven)
 - [x] Daily review, weekly playbook, scorecard with auto-disable
 - [x] Nightly backups (local and Telegram), systemd, Caddy, setup and update scripts
-- [x] 67 unit tests: XM lot sizing and min-lot rules, spreads, gaps, breakeven, swap, stop-out, weekend freeze, DB upgrade, settings limits, signals on M5/M15
+- [x] 74 unit tests: XM lot sizing and min-lot rules, spreads, gaps, breakeven, swap, stop-out, weekend freeze, DB upgrade, settings limits, signals on M5/M15
 
 **Not yet verified**, because it needs your keys or a server:
 - [ ] A real Haiku call through the gate (budget guards and parsing are unit-level only)
@@ -37,6 +37,8 @@
 7. **Months 1–3:** let it run, and do the weekly review in OPERATIONS.md. Don't change strategy settings more than once a week, so you can tell what helped.
 
 ## Strategy work (important)
+
+**Feedback engine (18 Oct 2026):** skipped-signal outcomes, pooled Lab learning, the weekly Lab → allowlist research job (proposals need your approval) and a weekly Sonnet research review. Note: under Standard's exact live rules the gold breakout was +14.9R in year 1 but −2.2R in year 2 (about break-even), so watch Standard's live results; the removal check will propose dropping it if it loses live.
 
 **2-year study (18 Oct 2026):** the only edge that held in both years is GOLD's Asian-range breakout on M15 with the H1 + SMC filters, and all three real accounts now trade it (backtest +27% to +45% over 2 years, ~1 trade a week each). The Lab account takes every signal for activity and live data. To get *more* real trades, test new setups through the same both-years test. Ideas: a gold New York-session pullback after the London breakout, BTC weekend range fades, a gold M15 trend pullback with a stricter filter (it was +0.02R, nearly there), and an XM raw-spread account (it halves forex costs, but the forex strategies would still need an edge).
 

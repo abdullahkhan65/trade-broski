@@ -14,12 +14,18 @@ Every trade is tagged with its strategy (signal type) and the market regime at e
 
 Nothing here can raise risk above the account's own risk % - it only lowers it or
 switches strategies off. Updated daily and after every closed trade.
+
+Pooled learning (adaptive.pool_lab): the Lab account trades every signal, so it collects
+evidence far faster than a real account that trades once a week. A real account's score
+also counts the Lab's trades of the same strategy + regime, on the symbols that account
+is allowed to trade it on, at half weight (LAB_WEIGHT) - its exits and filters differ.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
 from .db import DB, iso, parse_iso
+from .signals import allowed
 
 SHRINK = 10              # pseudo-trades at 0R
 OFF_SCORE = -0.15
@@ -28,13 +34,37 @@ OFF_DAYS_REPEAT = 28
 PROBATION_TRADES = 8
 LOOKBACK_DAYS = 120
 REGIMES = ("trend", "range", "volatile", "mixed")
+LAB = "lab"
+LAB_WEIGHT = 0.5
 
 
-def _stats(db: DB, account: str, signal: str, regime: str, since: str) -> tuple[int, float]:
+def _own(db: DB, account: str, signal: str, regime: str, since: str) -> tuple[int, float]:
     r = db.one("SELECT COUNT(*) AS n, COALESCE(SUM(pnl_r), 0) AS s FROM trades "
                "WHERE account=? AND signal=? AND regime=? AND closed_at >= ? AND pnl_r IS NOT NULL",
                (account, signal, regime, since))
     return int(r["n"]), float(r["s"])
+
+
+def _lab(db: DB, cfg: dict, signal: str, regime: str, since: str) -> tuple[int, float]:
+    """Lab trades of this strategy+regime on the symbols this account may trade it on."""
+    allow = cfg["signals"].get("allowlist") or []
+    rows = db.all("SELECT symbol, COUNT(*) AS n, COALESCE(SUM(pnl_r), 0) AS s FROM trades WHERE account=? "
+                  "AND signal=? AND regime=? AND closed_at >= ? AND pnl_r IS NOT NULL GROUP BY symbol",
+                  (LAB, signal, regime, since))
+    rows = [r for r in rows if not allow or allowed(allow, r["symbol"], signal)]
+    return sum(int(r["n"]) for r in rows), sum(float(r["s"]) for r in rows)
+
+
+def _stats(db: DB, account: str, signal: str, regime: str, since: str, cfg: dict | None = None
+           ) -> tuple[float, float, str]:
+    """(effective trades, effective total R, description). Own trades count 1, Lab trades LAB_WEIGHT."""
+    n, total = _own(db, account, signal, regime, since)
+    if not cfg or account == LAB or not cfg["adaptive"].get("pool_lab"):
+        return n, total, f"{n} trades"
+    ln, ls = _lab(db, cfg, signal, regime, since)
+    if not ln:
+        return n, total, f"{n} trades"
+    return n + LAB_WEIGHT * ln, total + LAB_WEIGHT * ls, f"{n} own + {ln} Lab trades"
 
 
 def _save(db: DB, account: str, signal: str, regime: str, status: str, mult: float, since: str | None,
@@ -56,6 +86,11 @@ def update(db: DB, account: str, cfg: dict, now: datetime | None = None) -> list
         "SELECT DISTINCT signal, regime FROM trades WHERE account=? AND regime IS NOT NULL", (account,))}
     pairs |= {(r["signal"], r["regime"]) for r in db.all(
         "SELECT signal, regime FROM strategy_state WHERE account=?", (account,))}
+    if account != LAB and cfg["adaptive"].get("pool_lab"):
+        allow = cfg["signals"].get("allowlist") or []
+        pairs |= {(r["signal"], r["regime"]) for r in db.all(
+            "SELECT DISTINCT symbol, signal, regime FROM trades WHERE account=? AND regime IS NOT NULL", (LAB,))
+            if not allow or allowed(allow, r["symbol"], r["signal"])}
     changes = []
     for signal, regime in sorted(pairs):
         cur = db.one("SELECT * FROM strategy_state WHERE account=? AND signal=? AND regime=?",
@@ -71,7 +106,7 @@ def update(db: DB, account: str, cfg: dict, now: datetime | None = None) -> list
             continue
 
         if status == "probation":
-            n, total = _stats(db, account, signal, regime, cur["since"])
+            n, total = _own(db, account, signal, regime, cur["since"])
             if n >= PROBATION_TRADES:
                 if total / n > 0:
                     _save(db, account, signal, regime, "active", 1.0, iso(now), None, n, total / n,
@@ -86,26 +121,27 @@ def update(db: DB, account: str, cfg: dict, now: datetime | None = None) -> list
                       total / n if n else None, f"probation: {n}/{PROBATION_TRADES} trades")
             continue
 
-        n, total = _stats(db, account, signal, regime, lookback)
+        n, total, desc = _stats(db, account, signal, regime, lookback, cfg)
         score = total / (n + SHRINK)
         avg = total / n if n else None
+        shown = round(n)
         if n >= min_trades and score < OFF_SCORE:
-            _save(db, account, signal, regime, "off", 0.0, iso(now), iso(now + timedelta(days=OFF_DAYS)), n, avg,
-                  f"losing: {n} trades, avg {avg:+.2f}R")
-            changes.append(f"{label}: switched off for {OFF_DAYS} days (avg {avg:+.2f}R over {n} trades)")
+            _save(db, account, signal, regime, "off", 0.0, iso(now), iso(now + timedelta(days=OFF_DAYS)), shown, avg,
+                  f"losing: {desc}, avg {avg:+.2f}R")
+            changes.append(f"{label}: switched off for {OFF_DAYS} days (avg {avg:+.2f}R, {desc})")
         elif n >= min_trades and score < 0:
             if status != "cautious":
-                changes.append(f"{label}: weak (avg {avg:+.2f}R) -> half risk")
+                changes.append(f"{label}: weak (avg {avg:+.2f}R, {desc}) -> half risk")
             _save(db, account, signal, regime, "cautious", 0.5, cur["since"] if cur and status == "cautious" else iso(now),
-                  None, n, avg, f"weak: {n} trades, avg {avg:+.2f}R -> half risk")
+                  None, shown, avg, f"weak: {desc}, avg {avg:+.2f}R -> half risk")
         else:
             if status == "cautious":
                 changes.append(f"{label}: recovered -> full risk")
-            note = f"{n} trades, avg {avg:+.2f}R" if n else "no trades yet"
+            note = f"{desc}, avg {avg:+.2f}R" if n else "no trades yet"
             if n < min_trades:
                 note += f" (judged after {min_trades})"
             _save(db, account, signal, regime, "active", 1.0, cur["since"] if cur and status == "active" else iso(now),
-                  None, n, avg, note)
+                  None, shown, avg, note)
     return changes
 
 

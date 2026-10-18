@@ -301,7 +301,11 @@ class Engine:
                         continue
                     self.last_eval[(m, sym, tf)] = candles[-1]["t"]
                     news_bias = bias_for(self.db, sym) if cfg["news"]["enabled"] else None
-                    sigs, why_not = evaluate(inst, candles, cfg, now, news_bias)
+                    dropped: list = []
+                    sigs, why_not = evaluate(inst, candles, cfg, now, news_bias, rejected=dropped)
+                    for sig, why in dropped:
+                        sig.regime = sig.regime or ""
+                        self._record(m, sig, False, why)
                     reg = detect_regime(candles, cfg)
                     if reg:
                         self.regimes[(sym, tf)] = str(reg)
@@ -337,11 +341,15 @@ class Engine:
 
     def _record(self, account: str, sig: Signal, accepted: bool, reason: str | None, ai_used: bool = False,
                 ai_reply: str | None = None) -> int:
+        # the plan at this moment, so skipped signals can be followed (shadow outcomes)
+        cfg = self.cfg(account)
+        s_mult, t_mult = risk.clamp_exit_multiples(cfg, sig.stop_atr, sig.target_atr)
+        stop, target = risk.plan_exits(sig.side, sig.price, sig.atr, s_mult, t_mult)
         cur = self.db.execute(
             "INSERT INTO decisions(at, account, symbol, signal, side, regime, signal_note, ai_used, ai_reply, accepted, "
-            "reject_reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "reject_reason, plan_entry, plan_stop, plan_target, plan_tf) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (iso(), account, sig.symbol, sig.type, sig.side, sig.regime, sig.note, int(ai_used), ai_reply,
-             int(accepted), reason))
+             int(accepted), reason, sig.price, stop, target, cfg["timeframe"]))
         return int(cur.lastrowid)
 
     def _pre_checks(self, account: str, inst: Instrument, sig: Signal, now: datetime,

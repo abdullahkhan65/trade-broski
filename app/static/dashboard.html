@@ -290,7 +290,8 @@ function renderStats(a) {
 
 // ----------------------------------------------------------------- tabs
 const TABS = [["trade", "Positions"], ["history", "History"], ["journal", "Journal"], ["scorecard", "Scorecard"],
-              ["learning", "Learning"], ["playbook", "Playbook"], ["ai", "AI & budget"], ["controls", "Account"]];
+              ["learning", "Learning"], ["research", "Research"], ["playbook", "Playbook"], ["ai", "AI & budget"],
+              ["controls", "Account"]];
 
 function renderTabsBar() {
   const el = document.getElementById("tabs");
@@ -306,7 +307,8 @@ async function renderTab() {
   renderTabsBar();
   const body = document.getElementById("tab-body");
   const views = { trade: async () => tradeTable(), history: historyTable, journal: journalTable, scorecard: scorecardTable,
-                  playbook: playbookView, learning: learningView, ai: async () => aiView(), controls: async () => controlsView() };
+                  playbook: playbookView, learning: learningView, research: researchView, ai: async () => aiView(),
+                  controls: async () => controlsView() };
   const t = tab, a = acc;
   const html = await (views[t] || views.trade)();
   if (t === tab && a === acc) patch(body, html, `${a}:${t}`);
@@ -388,11 +390,67 @@ async function learningView() {
     <div style="margin-top:8px" class="muted">Exits: stop ${e.default_stop_atr} ATR · target ${e.default_target_atr} ATR · breakeven ${e.breakeven_at_r || "off"}
       · switching ${L.adaptive.enabled ? "on" : "off"} · auto-tune ${L.adaptive.auto_tune ? "on" : "off"}
       <button class="small" style="margin-left:8px" onclick="runTuner()" ${L.tuning_running ? "disabled" : ""}>${L.tuning_running ? "Tuning…" : "Run tuner now"}</button></div>
+    <div class="section-title">What skipped signals would have done (last 30 days)</div>
+    <p class="muted" style="margin:0 0 6px;max-width:900px">Every signal the bot skipped is followed until it would have hit its stop or
+      target (or 48h pass). A skip reason with a negative total is <b>saving money</b>; a positive total means it is
+      <b>blocking winners</b> and may be too strict. Includes the XM spread.</p>
+    <table><tr><th>Skip reason</th><th class="num">Skipped</th><th class="num">Would have won</th><th class="num">Would have lost</th>
+      <th class="num">Total R</th><th class="num">Avg R</th><th>Verdict</th></tr>
+      ${L.skips.length ? L.skips.map((c) => `<tr><td>${esc(c.category)}</td><td class="num">${c.n}</td><td class="num">${c.wins}</td>
+        <td class="num">${c.losses}</td><td class="num ${cls(c.total_r)}">${c.total_r >= 0 ? "+" : ""}${c.total_r}</td>
+        <td class="num ${cls(c.avg_r)}">${c.avg_r.toFixed(2)}</td>
+        <td><span class="chip ${c.verdict === "saving money" ? "good" : c.verdict === "costing winners" ? "bad" : ""}">${c.verdict}</span></td></tr>`).join("")
+        : '<tr><td colspan="7" class="empty">Nothing resolved yet: outcomes appear about 2 days after a skip.</td></tr>'}</table>
     <div class="section-title">Strategies by regime</div>
     <table><tr><th>Strategy</th><th>Regime</th><th>Status</th><th class="num">Risk</th><th class="num">Trades</th><th class="num">Avg R</th><th>Why</th><th></th></tr>${states}</table>
     <div class="section-title">Tuning runs (walk-forward)</div>
     <table><tr><th>When</th><th>Result</th><th>Before</th><th>Best found</th><th class="num">Train best</th><th class="num">Test: current</th><th class="num">Test: best</th><th>Why</th></tr>${runs}</table>
   </div>`;
+}
+
+async function researchView() {
+  const R = await api("/api/research");
+  const rev = R.review;
+  const review = rev ? `<div class="mcard" style="margin-bottom:12px"><div class="muted" style="font-size:11.5px">${mtTime(rev.at)} · ${rev.model.includes("sonnet") ? "Sonnet" : "Haiku"}</div>
+      <p style="margin:6px 0">${esc(rev.summary)}</p>
+      ${rev.recommendations.length ? `<b>Recommendations</b><ul style="margin:4px 0 8px">${rev.recommendations.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
+      ${rev.risks.length ? `<b>Risks</b><ul style="margin:4px 0">${rev.risks.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</div>`
+    : '<div class="empty">No research review yet. It runs every Sunday 04:00 UTC, or press "Run research now".</div>';
+  const props = R.proposals.length ? R.proposals.map((p) => {
+      const bt = p.evidence && p.evidence.backtest;
+      return `<tr><td class="num">${mtTime(p.at)}</td><td>${LABEL[p.account] || p.account}</td>
+        <td><span class="chip ${p.action === "add" ? "good" : "bad"}">${p.action}</span> <b>${esc(p.item)}</b></td>
+        <td class="wrap">${esc(p.reason)}${bt ? ` · 2y: $250 → $${bt.equity}, max DD ${bt.max_dd_pct}%` : ""}</td>
+        <td>${p.status === "pending" ? `<button class="small" onclick="decide(${p.id},'approve')">Approve</button>
+          <button class="small ghost" onclick="decide(${p.id},'reject')">Reject</button>` : `<span class="chip">${p.status}</span>`}</td></tr>`; }).join("")
+    : '<tr><td colspan="5" class="empty">No proposals yet.</td></tr>';
+  const lab = R.lab.length ? R.lab.map((r) => `<tr><td>${state.quotes[r.symbol]?.xm || r.symbol}</td><td>${r.signal}</td>
+      <td class="num">${r.n}</td><td class="num">${r.n ? Math.round(100 * r.wins / r.n) : 0}%</td>
+      <td class="num ${cls(r.avg_r)}">${r.avg_r == null ? "–" : r.avg_r.toFixed(2)}</td><td class="num ${cls(r.total_r)}">${r.total_r}</td></tr>`).join("")
+    : '<tr><td colspan="6" class="empty">The Lab has no closed trades yet.</td></tr>';
+  const allow = Object.entries(R.allowlists).map(([m, a]) => `<div><b>${LABEL[m]}</b>: ${a.length ? a.map((x) => `<span class="chip">${esc(x)}</span>`).join(" ") : '<span class="muted">everything</span>'}</div>`).join("");
+  return `<div class="pad">
+    <p class="muted" style="margin:0 0 10px;max-width:900px">Every Sunday the bot looks at the Lab's live results. Pairs doing well are re-tested on
+      2 years of history under each account's rules; the ones that make money in <b>both</b> years are proposed for that account.
+      Allowlisted pairs that lose live are proposed for removal. Nothing changes until you approve.
+      <button class="small" style="margin-left:6px" onclick="runResearch()" ${R.running ? "disabled" : ""}>${R.running ? "Running…" : "Run research now"}</button></p>
+    <div class="section-title" style="margin-top:0">Weekly research review</div>${review}
+    <div class="section-title">Allowlist proposals</div>
+    <table><tr><th>When</th><th>Account</th><th>Change</th><th>Evidence</th><th></th></tr>${props}</table>
+    <div class="section-title">Lab league table (last 60 days)</div>
+    <table><tr><th>Symbol</th><th>Strategy</th><th class="num">Trades</th><th class="num">Win %</th><th class="num">Avg R</th><th class="num">Total R</th></tr>${lab}</table>
+    <div class="section-title">Current allowlists</div><div style="display:grid;gap:6px">${allow}</div>
+  </div>`;
+}
+async function decide(id, action) {
+  if (!confirm(`${action === "approve" ? "Approve" : "Reject"} proposal #${id}?`)) return;
+  try { await api(`/api/proposals/${id}/${action}`, { method: "POST" }); toast(action === "approve" ? "Approved: allowlist updated" : "Rejected"); renderTab(); }
+  catch (e) { toast("Error: " + e.message); }
+}
+async function runResearch() {
+  const r = await api("/api/research/run", { method: "POST" });
+  toast(r.started ? "Research started: 2-year tests take a few minutes each" : r.reason);
+  setTimeout(renderTab, 1500);
 }
 
 async function resetStrategy(signal, regime) {
@@ -536,7 +594,7 @@ async function loadCompare() {
 // ------------------------------------------------------------------ start
 makeChart();
 selectAccount([...MODES, "compare"].includes(acc) ? acc : "standard");
-setInterval(() => { if (acc !== "compare") { loadState(); if (["journal", "scorecard", "ai", "learning", "history"].includes(tab)) renderTab(); } }, 30000);
+setInterval(() => { if (acc !== "compare") { loadState(); if (["journal", "scorecard", "ai", "learning", "history", "research"].includes(tab)) renderTab(); } }, 30000);
 setInterval(() => refreshCandles().catch(() => {}), 60000);
 setInterval(() => { if (acc === "compare") loadCompare(); }, 60000);
 </script>

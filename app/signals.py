@@ -412,10 +412,11 @@ def allowed(allowlist: list[str], symbol: str, strategy: str) -> bool:
 
 def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | None = None,
              news_bias: dict | None = None, disabled: set[str] | None = None,
-             atr_floor: float | None = None) -> tuple[list[Signal], str]:
+             atr_floor: float | None = None, rejected: list | None = None) -> tuple[list[Signal], str]:
     """Return (signals, filter_reason). filter_reason is '' when filters passed.
     Several signals can come back (same direction); the engine picks the one the
-    adaptive layer rates best."""
+    adaptive layer rates best. Signals dropped by the H1-trend or SMC filter are appended to
+    `rejected` as (signal, reason) so the engine can log them and track their shadow outcome."""
     now = now or datetime.now(timezone.utc)
     disabled = disabled or set()
     f = check_filters(inst, candles, cfg, now, atr_floor)
@@ -474,7 +475,10 @@ def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | N
         if trend is not None:
             want = {"up": "LONG", "down": "SHORT"}.get(trend)
             if out[0].side != want:
-                return [], f"{out[0].side.lower()} signal against the H1 trend ({trend})"
+                why = f"{out[0].side.lower()} signal against the H1 trend ({trend})"
+                if rejected is not None:
+                    rejected.extend((x, why) for x in out)
+                return [], why
             for sig in out:
                 sig.note += f"; with the H1 trend ({trend})"
     if out and s.get("smc_filter"):
@@ -486,6 +490,8 @@ def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | N
             why = smc.location_check(sig.side, sig.price, stop_dist, levels, zs, inst.decimals) or ""
             if not why:
                 kept.append(sig)
+            elif rejected is not None:
+                rejected.append((sig, f"SMC: {why}"))
         if not kept:
             return [], f"SMC: {why}"
         out = kept

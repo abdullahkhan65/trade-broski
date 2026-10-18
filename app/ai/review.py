@@ -57,6 +57,9 @@ DAILY_SYSTEM = """You review one day of ONE paper-trading account's closed trade
 The account's trading style is given; judge trades against that style. Write 3-5 short, specific,
 actionable lessons (one sentence each) - which setups worked, which symbols/sessions/news conditions
 to avoid. Don't invent patterns from 1 trade; say 'not enough data' when that's true.
+You also get recent SKIPPED signals with what they WOULD have done (shadow_result target/stop/expired,
+shadow_r in R). Skips by the AI that would have hit the target are mistakes to learn from; skips that
+would have hit the stop were good calls - say which patterns the AI should take or keep avoiding.
 Also write a 1-2 sentence summary of the day. JSON only."""
 
 WEEKLY_SYSTEM = """You maintain the trading playbook for ONE paper-trading account (gold, forex majors, BTC
@@ -89,11 +92,17 @@ async def daily_review(ai: AIClient, db: DB, cfg: dict, mode: str, day: datetime
                     "FROM trades WHERE account=? AND closed_at >= ? AND closed_at < ?", (mode, d0, d1))
     skips = db.all("SELECT symbol, side, signal, reject_reason FROM decisions "
                    "WHERE account=? AND at >= ? AND at < ? AND accepted=0 LIMIT 25", (mode, d0, d1))
+    since3 = (day - timedelta(days=3)).strftime("%Y-%m-%d")
+    shadows = db.all("SELECT at, symbol, side, signal, reject_reason, shadow_result, shadow_r FROM decisions "
+                     "WHERE account=? AND accepted=0 AND at >= ? AND shadow_result IS NOT NULL "
+                     "ORDER BY ABS(shadow_r) DESC LIMIT 20", (mode, since3))
     label = MODE_LABELS[mode]
-    if not trades and not skips:
+    if not trades and not skips and not shadows:
         return f"[{label}] {d0}: nothing happened."
     user = (f"{_style(mode)}\n\nDAY {d0}\nCLOSED TRADES:\n{json.dumps(trades, default=str)}\n\n"
-            f"SKIPPED SIGNALS:\n{json.dumps(skips, default=str)}\n\nCURRENT PLAYBOOK:\n{current_playbook(db, mode)}")
+            f"SKIPPED SIGNALS:\n{json.dumps(skips, default=str)}\n\n"
+            f"RECENT SKIPS WITH WHAT THEY WOULD HAVE DONE (last 3 days):\n{json.dumps(shadows, default=str)}\n\n"
+            f"CURRENT PLAYBOOK:\n{current_playbook(db, mode)}")
     res = await ai.call_json(cfg, f"daily_review:{mode}", DAILY_SYSTEM, user, LESSONS_SCHEMA, max_tokens=400)
     if not res.ok or not res.data:
         return f"[{label}] review {d0} skipped: {res.error}"

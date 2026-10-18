@@ -19,6 +19,14 @@ ADDED_COLUMNS = [
     ("positions", "regime", "TEXT"),
     ("trades", "regime", "TEXT"),
     ("decisions", "regime", "TEXT"),
+    # shadow outcomes: the plan at decision time, and what would have happened if it had been taken
+    ("decisions", "plan_entry", "REAL"),
+    ("decisions", "plan_stop", "REAL"),
+    ("decisions", "plan_target", "REAL"),
+    ("decisions", "plan_tf", "TEXT"),
+    ("decisions", "shadow_result", "TEXT"),     # target | stop | expired
+    ("decisions", "shadow_r", "REAL"),
+    ("decisions", "shadow_at", "TEXT"),
 ]
 
 SCHEMA = """
@@ -212,6 +220,25 @@ CREATE TABLE IF NOT EXISTS tuning_runs (
     reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    account TEXT NOT NULL,
+    action TEXT NOT NULL,                       -- add | remove
+    item TEXT NOT NULL,                         -- SYMBOL:strategy allowlist entry
+    evidence TEXT,                              -- JSON: lab stats, 2-year test, live stats
+    reason TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',     -- pending | approved | rejected | expired
+    decided_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS research_reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    model TEXT,
+    data TEXT NOT NULL                          -- JSON: {summary, recommendations, risks}
+);
+
 CREATE TABLE IF NOT EXISTS kv (
     k TEXT PRIMARY KEY,
     v TEXT
@@ -256,6 +283,8 @@ class DB:
             cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        # indexes on added columns: only after the columns exist on upgraded databases
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_signal ON trades(signal, regime, closed_at)")
         self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
         self.conn.commit()
 

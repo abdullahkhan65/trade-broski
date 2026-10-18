@@ -51,6 +51,10 @@ One Python process (FastAPI + asyncio + APScheduler) and one SQLite file. There 
 | `app/feeds/dukascopy.py` | Free 2-year gold/forex history for backtests (minute candles aggregated to 15m) |
 | `app/backtest.py` | History download and cache; `collect_signals` (run once) + `simulate` (cheap replay) with the same signal and risk code |
 | `app/adaptive.py` | Per-account strategy × regime scores: active / cautious / off / probation, risk multiplier |
+| `app/exits.py` | The "human instinct" stall exit (shared by backtest and engine) |
+| `app/shadow.py` | Shadow outcomes: follows every skipped signal to stop/target/48h; summary by skip reason |
+| `app/promoter.py` | Lab league table, allowlist candidates/removals, 2-year both-years verification (`python -m app.promoter verify ...`) |
+| `app/ai/research.py` | Weekly research review by Sonnet (Haiku fallback) |
 | `app/tuner.py` | Weekly walk-forward tuning of stop/target/breakeven; runs as a separate low-priority process |
 | `app/check.py` | Pre-flight connectivity check |
 
@@ -81,6 +85,9 @@ On first start after an upgrade from the single-account version, the old file is
 | `GET /api/state?account=` | that account, all accounts' summaries, its positions, Market Watch quotes (XM bid/ask/spread, 0.01-lot risk), AI budget, feeds |
 | `GET /api/stream?account=` | server-sent events every 1s: quotes, account, position profit |
 | `GET /api/candles?symbol=&tf=` | M5/M15 candles for the chart |
+| `GET /api/research` | Proposals, Lab league table, latest research review, allowlists |
+| `POST /api/research/run` | Run the weekly research job now |
+| `POST /api/proposals/{id}/approve` or `/reject` | Decide an allowlist proposal (approve edits the account's allowlist) |
 | `GET /api/levels?symbol=&tf=` | SMC map for the chart: levels (swept or not), FVGs and order blocks |
 | `GET /api/compare` | per-account stats: equity, trades, win rate, avg R, avg %/day, max drawdown |
 | `GET /api/equity`, `/api/trades?account=`, `/api/decisions?account=`, `/api/scorecard?account=`, `/api/playbook?mode=`, `/api/news` | data for the tabs |

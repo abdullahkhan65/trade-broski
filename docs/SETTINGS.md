@@ -69,13 +69,14 @@ Since the only proven edge is on gold, **all three real accounts now accept gold
 - **Only trade with the H1 trend**: hourly candles are built from the M5/M15 ones. Longs only when the H1 close is above EMA50 and EMA20 is above EMA50; shorts the opposite; a flat H1 means no trade.
 - **AI**: minimum confidence for Haiku's TAKE, and what to do when AI is off or over budget.
 - **Range reversion / Momentum breakout**: the two regime-specific strategies (see STRATEGY.md §7).
-- **Self-learning**: *Strategy switching by regime* on/off; *Trades needed before judging a strategy* (fewer means it adapts faster but reacts to luck); *Weekly self-tuning* on/off. Tuning only ever changes the default stop, target and breakeven, within this mode's own limits.
+- **Self-learning**: *Also learn from the Lab's trades* (pooled, half weight); *Strategy switching by regime* on/off; *Trades needed before judging a strategy* (fewer means it adapts faster but reacts to luck); *Weekly self-tuning* on/off. Tuning only ever changes the default stop, target and breakeven, within this mode's own limits.
 - **Weekend**: close, halve or hold gold/forex before Friday's close, and stop opening new trades N minutes before it.
 
 ## Global settings (all accounts)
 - **Trading mode**: `auto` opens trades. `signals_only` logs and alerts what each account *would* do.
 - **Instruments**: GOLD, EURUSD, GBPUSD and BTCUSD are on; USDJPY is off by default (its price source, Yahoo, is the least reliable).
-- **Indicators**: EMA/RSI/ATR periods, the spike filter, the dead-market filter, and auto-disabling losing signals after N trades.
+- **Indicators**: EMA/RSI/ATR periods, the spike filter and the dead-market filter.
+- **Research (weekly)**: the Lab → allowlist pipeline on/off, how many Lab trades and what average R a pair needs before it's re-tested, and the weekly Sonnet research review.
 - **AI**: on/off, max calls per day (default 120), **total** monthly budget for Haiku + Sonnet (default $6, **hard max $8**), daily review, weekly playbook.
 - **Sonnet**: on/off, its own monthly budget inside the total (default $3, hard max $5), max Sonnet calls per day (default 10), second opinion on/off and its risk threshold (default 1.5%). See ARCHITECTURE.md → "Two AI models".
 - **News & events**: calendar blackout, AI news digest, headline feeds.
