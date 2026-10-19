@@ -156,9 +156,10 @@ def lookup(db: DB, account: str, cfg: dict, signal: str, regime: str) -> tuple[s
     return row["status"], float(row["risk_mult"]), row["reason"] or ""
 
 
-def score(db: DB, account: str, signal: str, regime: str) -> float:
+def score(db: DB, account: str, signal: str, regime: str, cfg: dict | None = None) -> float:
     """Shrunk average R - used to pick between signals that fire together."""
-    n, total = _stats(db, account, signal, regime, iso(datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)))
+    n, total, _ = _stats(db, account, signal, regime,
+                         iso(datetime.now(timezone.utc) - timedelta(days=LOOKBACK_DAYS)), cfg)
     return total / (n + SHRINK)
 
 

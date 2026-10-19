@@ -330,19 +330,30 @@ class Engine:
                     if not candles or candles[-1]["t"] <= self.last_eval.get((m, sym, tf), 0):
                         continue
                     self.last_eval[(m, sym, tf)] = candles[-1]["t"]
-                    news_bias = bias_for(self.db, sym) if cfg["news"]["enabled"] else None
-                    dropped: list = []
-                    self.count(m, "checked")
-                    sigs, why_not = evaluate(inst, candles, self._explore_cfg(cfg), now, news_bias, rejected=dropped)
-                    self.count(m, "signals" if sigs else f"filter:{filter_key(why_not)}")
-                    for sig, why in dropped:
-                        sig.regime = sig.regime or ""
-                        self._record(m, sig, False, why)
-                    reg = detect_regime(candles, cfg)
-                    if reg:
-                        self.regimes[(sym, tf)] = str(reg)
-                    self.last_check[(m, sym)] = why_not or ("signal" if sigs else "no setup")
-                    await self._choose_and_handle(m, inst, sigs, candles, now)
+                    # one account/symbol failing must never silence the others (19 Oct 2026: a crash in
+                    # here aborted every remaining check of the tick)
+                    try:
+                        await self._evaluate_one(m, cfg, sym, inst, candles, now)
+                    except Exception:  # noqa: BLE001
+                        log.exception("[%s] %s evaluation failed", m, sym)
+                        self.count(m, "errors")
+                        self.last_check[(m, sym)] = "error - see logs"
+
+    async def _evaluate_one(self, m: str, cfg: dict, sym: str, inst: Instrument, candles: list[dict],
+                            now: datetime) -> None:
+        news_bias = bias_for(self.db, sym) if cfg["news"]["enabled"] else None
+        dropped: list = []
+        self.count(m, "checked")
+        sigs, why_not = evaluate(inst, candles, self._explore_cfg(cfg), now, news_bias, rejected=dropped)
+        self.count(m, "signals" if sigs else f"filter:{filter_key(why_not)}")
+        for sig, why in dropped:
+            sig.regime = sig.regime or ""
+            self._record(m, sig, False, why)
+        reg = detect_regime(candles, cfg)
+        if reg:
+            self.regimes[(sym, cfg["timeframe"])] = str(reg)
+        self.last_check[(m, sym)] = why_not or ("signal" if sigs else "no setup")
+        await self._choose_and_handle(m, inst, sigs, candles, now)
 
     async def _choose_and_handle(self, account: str, inst: Instrument, sigs: list[Signal],
                                  candles: list[dict], now: datetime) -> None:
@@ -357,7 +368,7 @@ class Engine:
                 self._record(account, sig, False, f"adaptive: {sig.type} is off in {sig.regime} markets ({why})")
                 continue
             trial = bool(main_allow) and not allowed_pair(main_allow, sig.symbol, sig.type)
-            allowed.append((not trial, adaptive.score(self.db, account, sig.type, sig.regime), mult, status, sig, trial))
+            allowed.append((not trial, adaptive.score(self.db, account, sig.type, sig.regime, cfg), mult, status, sig, trial))
         if not allowed:
             return
         allowed.sort(key=lambda x: (x[0], x[1]), reverse=True)      # proven setups first, then best score
