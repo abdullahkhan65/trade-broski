@@ -77,6 +77,13 @@ class Engine:
     async def bootstrap(self) -> None:
         for m in MODES:
             current_playbook(self.db, m)
+        # one-off: gold candles stored before 19 Oct 2026 are on the Binance perp's prices (a few dollars
+        # above XM's spot gold) - drop them; the reload below stores them shifted to spot
+        for sym, inst in INSTRUMENTS.items():
+            if inst.spot_feed and not self.db.kv_get(f"spot_candles_v1:{sym}"):
+                self.db.execute("DELETE FROM prices WHERE symbol=?", (sym,))
+                self.db.kv_set(f"spot_candles_v1:{sym}", 1)
+                log.info("Dropped %s perp-priced candles; reloading on spot prices", sym)
         for tf in ("15m", "5m"):
             for sym, inst in INSTRUMENTS.items():
                 try:

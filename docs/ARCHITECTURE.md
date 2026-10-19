@@ -49,6 +49,7 @@ One Python process (FastAPI + asyncio + APScheduler) and one SQLite file. There 
 | `app/alerts.py` | Telegram send and file upload, command polling |
 | `app/feeds/__init__.py` | Feed registry: builds the Binance, Kraken and Yahoo feeds; `fetch_candles` dispatches by instrument source |
 | `app/feeds/binance.py`, `kraken.py`, `yahoo.py` | Live quotes (`run_stream`) and 15m candles (`fetch_candles`) per source |
+| `app/feeds/swissquote.py` | Spot gold quote (XM's GOLD is spot; the Binance perp is ~$7 higher). Gold candles come from the perp shifted by the live perp-spot gap; if Swissquote drops, the quote falls back to perp minus the gap. US30/US100 come from Yahoo futures, ~10 min delayed (candles too, so signal and fill stay consistent) |
 | `app/feeds/dukascopy.py` | Free 2-year gold/forex history for backtests (minute candles aggregated to 15m) |
 | `app/backtest.py` | History download and cache; `collect_signals` (run once) + `simulate` (cheap replay) with the same signal and risk code |
 | `app/adaptive.py` | Per-account strategy × regime scores: active / cautious / off / probation, risk multiplier |

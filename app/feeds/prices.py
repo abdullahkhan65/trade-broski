@@ -53,6 +53,9 @@ class PriceCache:
     funding_rate: float | None = None
     next_funding_time: datetime | None = None
     status: dict[str, FeedStatus] = field(default_factory=dict)
+    # instruments quoted from a spot feed while their candles come from a perp (gold): perp mid - spot mid
+    basis: dict[str, float] = field(default_factory=dict)
+    perp_mid: dict[str, float] = field(default_factory=dict)
 
     def update(self, symbol: str, bid: float, ask: float, ts: datetime | None = None,
                mark: float | None = None) -> None:

@@ -1,8 +1,10 @@
 """BTC and gold prices from Binance USD-M futures (public, no key).
 
 * BTC_USDT <- BTCUSDT perpetual: best bid/ask (priced like XM's BTCUSD CFD).
-* XAU_USD  <- XAUUSDT gold perpetual: best bid/ask. It tracks spot gold; the bot
-  trades gold on XM market hours and charges XM-style swap.
+* XAU_USD  <- XAUUSDT gold perpetual: CANDLES only. The perp trades a few dollars above spot gold
+  (XM's GOLD is spot), so the live quote comes from Swissquote spot (feeds/swissquote.py) and the
+  candles are shifted by the live perp-spot gap (the "basis"). If the spot feed drops, the quote
+  falls back to perp - basis.
 * REST: 5m/15m klines.
 * Fallback: if Binance is unreachable (some server regions get HTTP 451), the
   same data is polled from Bybit's public API every 2 seconds.
@@ -19,6 +21,7 @@ import certifi
 import httpx
 import websockets
 
+from ..instruments import INSTRUMENTS
 from .prices import PriceCache, tf_seconds
 
 log = logging.getLogger("feeds.binance")
@@ -27,6 +30,8 @@ REST = "https://fapi.binance.com"
 BYBIT = "https://api.bybit.com"
 SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 FUNDING_SYMBOL = "BTC_USDT"     # only BTC is treated as a perp (funding); gold is simulated as a CFD
+SPOT_QUOTED = {s for s, i in INSTRUMENTS.items() if i.source == "binance" and i.spot_feed}
+SPOT_STALE_SECONDS = 20
 
 
 def _ms(ms: int | str) -> datetime:
@@ -80,8 +85,7 @@ class BinanceFeed:
             return
         ev = d.get("e")
         if ev == "bookTicker":
-            q = self.cache.get(sym)
-            self.cache.update(sym, float(d["b"]), float(d["a"]), mark=q.mark if q else None)
+            self._quote(sym, float(d["b"]), float(d["a"]))
         elif ev == "markPriceUpdate":
             mark = float(d["p"])
             q = self.cache.get(sym)
@@ -95,6 +99,17 @@ class BinanceFeed:
                 if d.get("T"):
                     self.cache.next_funding_time = _ms(d["T"])
 
+    def _quote(self, sym: str, bid: float, ask: float, mark: float | None = None) -> None:
+        if sym in SPOT_QUOTED:
+            self.cache.perp_mid[sym] = (bid + ask) / 2
+            basis = self.cache.basis.get(sym)
+            spot_age = self.cache.age_seconds(sym)
+            if basis is not None and (spot_age is None or spot_age > SPOT_STALE_SECONDS):
+                self.cache.update(sym, bid - basis, ask - basis)      # spot feed down: perp minus the gap
+            return
+        q = self.cache.get(sym)
+        self.cache.update(sym, bid, ask, mark=mark if mark is not None else (q.mark if q else None))
+
     async def _poll_bybit_for(self, seconds: float) -> None:
         loop = asyncio.get_running_loop()
         end = loop.time() + max(seconds, 2)
@@ -105,8 +120,7 @@ class BinanceFeed:
                         r = await client.get(f"{BYBIT}/v5/market/tickers",
                                              params={"category": "linear", "symbol": feed_sym})
                         t = r.json()["result"]["list"][0]
-                        self.cache.update(sym, float(t["bid1Price"]), float(t["ask1Price"]),
-                                          mark=float(t["markPrice"]))
+                        self._quote(sym, float(t["bid1Price"]), float(t["ask1Price"]), float(t["markPrice"]))
                         if sym == FUNDING_SYMBOL:
                             self.cache.funding_rate = float(t["fundingRate"])
                             self.cache.next_funding_time = _ms(t["nextFundingTime"])
@@ -117,15 +131,25 @@ class BinanceFeed:
 
     async def fetch_candles(self, symbol: str, count: int = 1500, tf: str = "15m",
                             start: datetime | None = None) -> list[dict]:
-        """Completed candles, oldest first. Falls back to Bybit if Binance fails."""
+        """Completed candles, oldest first. Falls back to Bybit if Binance fails.
+        Spot-quoted instruments (gold) are shifted by the perp-spot gap so they match XM's prices."""
         feed_sym = self.symbols[symbol]
+        rows = None
         if not self.use_bybit_candles:
             try:
-                return await self._binance_klines(feed_sym, count, start, tf)
+                rows = await self._binance_klines(feed_sym, count, start, tf)
             except Exception as e:  # noqa: BLE001
                 log.warning("Binance klines failed (%s) - switching to Bybit", e)
                 self.use_bybit_candles = True
-        return await self._bybit_klines(feed_sym, count, tf)
+        if rows is None:
+            rows = await self._bybit_klines(feed_sym, count, tf)
+        if symbol in SPOT_QUOTED:
+            basis = self.cache.basis.get(symbol)
+            if basis is None:
+                raise RuntimeError("perp-spot gap not known yet - candles would be off spot")
+            rows = [{**c, "o": c["o"] - basis, "h": c["h"] - basis, "l": c["l"] - basis, "c": c["c"] - basis}
+                    for c in rows]
+        return rows
 
     async def _binance_klines(self, feed_sym: str, count: int, start: datetime | None,
                               tf: str = "15m") -> list[dict]:

@@ -29,6 +29,7 @@ class Instrument:
     min_lot: float = 0.01
     lot_step: float = 0.01
     max_lot: float = 50.0
+    spot_feed: str = ""           # Swissquote spot pair for the live quote (candles from `source`, shifted to spot)
 
     @property
     def point(self) -> float:
@@ -51,7 +52,7 @@ INSTRUMENTS: dict[str, Instrument] = {
         ("gold", "xau", "bullion", "fed", "fomc", "powell", "inflation", "cpi",
          "treasury", "yields", "safe haven", "safe-haven", "geopolit", "war",
          "central bank", "dollar", "rate cut", "rate hike", "tariff"),
-        "XAUUSD", 1e3,
+        "XAUUSD", 1e3, spot_feed="XAU/USD",
     ),
     "EUR_USD": Instrument(
         "EUR_USD", "EURUSD", "EURUSD", "kraken", "EUR/USD", "forex", "EUR", "USD", 5, 100_000,

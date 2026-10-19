@@ -21,6 +21,7 @@ log = logging.getLogger("feeds.yahoo")
 CHART = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 UA = {"User-Agent": "Mozilla/5.0"}
 POLL_SECONDS = 15
+MAX_QUOTE_AGE = 1500      # seconds; futures quotes are ~600s old, Friday's close on weekends is hours old
 
 
 class YahooFeed:
@@ -41,9 +42,10 @@ class YahooFeed:
                         meta = r.json()["chart"]["result"][0]["meta"]
                         px = float(meta["regularMarketPrice"])
                         ts = datetime.fromtimestamp(int(meta["regularMarketTime"]), tz=timezone.utc)
-                        # only count it as live if Yahoo's own quote time is recent
-                        # (on weekends it keeps returning Friday's close)
-                        if (datetime.now(timezone.utc) - ts).total_seconds() < 300 or not self.cache.get(sym):
+                        # only count it as live if Yahoo's own quote time is recent (on weekends it keeps
+                        # returning Friday's close). CME/CBOT futures (US30/US100 via YM=F/NQ=F) are delayed
+                        # ~10 minutes on Yahoo - so are their candles, so signal and fill use the same moment.
+                        if (datetime.now(timezone.utc) - ts).total_seconds() < MAX_QUOTE_AGE or not self.cache.get(sym):
                             self.cache.update(sym, px, px)
                         self.status.connected = True
                         self.status.last_message = datetime.now(timezone.utc)
