@@ -157,4 +157,20 @@ def test_upgrade_from_v2_server_adds_lab_allowlists_and_new_playbooks():
     assert store.current["instruments"]["US30"] is True
     assert store.cfg("lab")["ai"]["use_ai"] is False
     assert db.scalar("SELECT COUNT(*) FROM playbook_versions WHERE source='seed-v4'") == len(MODES)
-    assert db.kv_get("settings_defaults_version") == 4
+    assert db.kv_get("settings_defaults_version") == DEFAULTS_VERSION
+
+
+def test_upgrade_v4_to_v5_only_changes_allowlists_and_trials():
+    db = DB(":memory:")
+    old = validate(DEFAULTS)
+    old["modes"]["moderate"]["signals"]["allowlist"] = ["XAU_USD:session_breakout"]
+    old["modes"]["moderate"]["explore"]["trials"] = ["*:zone_retest"]
+    old["modes"]["moderate"]["risk"]["risk_per_trade_pct"] = 1.2          # the user's own change survives
+    db.execute("INSERT INTO settings_versions(at, source, data) VALUES (?,?,?)", (iso(), "ui", json.dumps(old)))
+    db.kv_set("settings_defaults_version", 4)
+    cfg = SettingsStore(db).cfg("moderate")
+    assert "US100:zone_retest@trail1.5" in cfg["signals"]["allowlist"]
+    assert "XAU_USD:range_reversion@trail1.5" in cfg["signals"]["allowlist"]
+    assert cfg["explore"]["trials"][0] == "BTC_USDT:london_orb@trail1.5"
+    assert cfg["risk"]["risk_per_trade_pct"] == 1.2
+    assert db.scalar("SELECT COUNT(*) FROM playbook_versions WHERE source='seed-v5'") == len(MODES)

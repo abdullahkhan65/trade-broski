@@ -239,6 +239,14 @@ Rerun it with `python -m app.backtest --mode <mode> --symbol all --days 730`. Th
 - **Settings drift:** stops had been widened to 3-4 ATR and the 0.01-lot allowance to 8% on the Settings
   page, making most trades too big to take and the rest risk up to 8%. Reset to the tested defaults.
 
+- **Allowlist v5 (21 Oct 2026):** the round-3 data has exactly 7 setups on the live markets that made money
+  in both years in all 3 styles under the uniform filters - the 5 already live plus US100 zone retest
+  (trail 1.5) and GOLD range reversion (trail 1.5), now added. $250, 2 years, real sizing: GOLD +48% /
+  +75% / +77% (Standard / Moderate / Aggressive, max DD 30 / 27 / 21%), US100 +58% / +72% / +71% (max DD
+  25 / 20 / 20%), both years positive. ~4.5 trades a week per account in total - that is the ceiling the
+  evidence supports on these markets. Trials cut to BTC London ORB (trail 1.5, both years positive),
+  BTC and GBP range reversion: gold/index trials can't trade at $250 inside the trial risk cap.
+
 ## 8. First backtest result (honest)
 Run on 17 Oct 2026 on BTC:
 

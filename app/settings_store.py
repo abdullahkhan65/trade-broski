@@ -21,7 +21,7 @@ from typing import Any
 from .db import DB, iso
 
 MODES = ["standard", "moderate", "aggressive", "lab"]
-DEFAULTS_VERSION = 4          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
+DEFAULTS_VERSION = 5          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
 MODE_LABELS = {
     "standard": "Standard",
     "moderate": "Moderate",
@@ -29,14 +29,16 @@ MODE_LABELS = {
     "lab": "Lab",
 }
 MODE_BLURBS = {
-    "standard": "Patient professional: trades only the setup that made money in both of the last 2 years - "
-                "GOLD's Asian-range breakout on M15 with the H1 trend and SMC filters. 1% risk (0.01 lot of gold "
-                "is ~3-5% at $250), max 2 trades a day, done for the day after 2 losses. Backtest: +29% in 2 years.",
-    "moderate": "Professional swing/day trader: the same gold edge with 1.5% risk plus a trial of BTC's London "
-                "opening-range breakout. Breakeven at +1.5R, half risk after 2 losses. Backtest: gold +45% in 2 years.",
-    "aggressive": "Small-account scaler: the gold edge with 2.5% risk so lots grow fastest as the account grows, "
-                  "stop to breakeven at +1R, profits taken when momentum stalls, risk halved after a +4% day. "
-                  "Backtest: +27% in 2 years.",
+    "standard": "Patient professional: trades only the 7 setups that made money in both of the last 2 years "
+                "(GOLD Asian-range breakout and range reversion; US30 London/NY opening-range breakouts and "
+                "order-block/FVG retests; US100 London breakout and retests), on M15 with the H1 trend and SMC "
+                "filters. 1% risk (a 0.01 lot of gold or an index is ~2.5-5% at $250), max 2 trades a day, "
+                "done for the day after 2 losses.",
+    "moderate": "Professional swing/day trader: the same 7 proven setups with 1.5% risk, max 3 trades a day, "
+                "half risk after 2 losses; small trial trades on BTC/GBP near-miss setups.",
+    "aggressive": "Small-account scaler: the same 7 proven setups with 2.5% risk so lots grow fastest as the "
+                  "account grows, quick management (breakeven, trailing, profits taken when momentum stalls), up "
+                  "to 6 trades a day, risk halved after a +4% day.",
     "lab": "Research account: takes EVERY signal from every strategy with no AI, no filters and no daily caps, "
            "so there is always activity and live data on what works. Not a strategy to copy.",
 }
@@ -60,12 +62,13 @@ STALL_FAST = {"stall_exit": True, "stall_min_progress": 0.35, "stall_candles": 3
               "partial_at_r": 0.0, "partial_fraction": 0.5, "trail_r": 0.0}
 # Exploration budget: trial trades on unproven-but-promising setups, minimum lot only, capped weekly loss.
 # Proven (2-year research, both years positive in all 3 account styles, uniform H1+SMC filters):
+# These 7 are ALL the setups on the live markets that passed (~4.6 trades a week per account in the backtest).
 PROVEN = ["XAU_USD:session_breakout", "US100:london_orb@liq+trail1", "US30:zone_retest@liq+trail1",
-          "US30:ny_orb@liq+trail1", "US30:london_orb@liq+trail1"]
-# Trials: passed with other settings or nearly passed - min lot, capped weekly loss
-TRIALS = ["US100:zone_retest@trail1.5", "US100:ny_orb@liq+trail1", "US30:session_breakout@trail1.5",
-          "BTC_USDT:london_orb", "BTC_USDT:ny_orb", "BTC_USDT:range_reversion",
-          "GBP_USD:session_breakout", "EUR_USD:range_reversion", "GBP_USD:range_reversion", "*:zone_retest"]
+          "US30:ny_orb@liq+trail1", "US30:london_orb@liq+trail1",
+          "US100:zone_retest@trail1.5", "XAU_USD:range_reversion@trail1.5"]
+# Trials: near misses that can actually trade at $250 within the trial risk cap (0.01 lot of gold or an
+# index risks 2.5-5% - far above it, so those can't be trials). Setups that lost in both years were dropped.
+TRIALS = ["BTC_USDT:london_orb@trail1.5", "BTC_USDT:range_reversion", "GBP_USD:range_reversion@liq+trail1"]
 
 
 def _explore(budget: float, max_risk: float, per_day: int) -> dict:
@@ -582,6 +585,18 @@ class SettingsStore:
             for mode, text in SEED_PLAYBOOKS.items():
                 self.db.execute("INSERT INTO playbook_versions(mode, at, content, source) VALUES (?,?,?,?)",
                                 (mode, iso(), text, "seed-v4"))
+        if version < 5:
+            # v5 (21 Oct 2026): all 7 robust setups on the allowlists, trials cut to ones that can trade at
+            # $250 and didn't lose in both years. Only these two lists change; your other settings stay.
+            for m in ("standard", "moderate", "aggressive"):
+                data["modes"][m]["signals"]["allowlist"] = list(PROVEN)
+                data["modes"][m]["signals"]["range_reversion"] = True
+                data["modes"][m]["signals"]["zone_retest"] = True
+                data["modes"][m]["explore"]["trials"] = list(TRIALS)
+            from .ai.review import SEED_PLAYBOOKS
+            for mode, text in SEED_PLAYBOOKS.items():
+                self.db.execute("INSERT INTO playbook_versions(mode, at, content, source) VALUES (?,?,?,?)",
+                                (mode, iso(), text, "seed-v5"))
         self.save(data, f"upgrade:defaults-v{DEFAULTS_VERSION}")
         self.db.kv_set("settings_defaults_version", DEFAULTS_VERSION)
 

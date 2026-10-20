@@ -14,21 +14,24 @@ from ..settings_store import MODE_BLURBS, MODE_LABELS
 from .client import AIClient
 
 SEED_PLAYBOOKS = {
-    "standard": """1. Proven setups (2-year backtest, both years positive): GOLD Asian-range breakout; US100 London opening-range
-   breakout; US30 London and New York opening-range breakouts; US30 retest of a fresh order block / fair value gap.
+    "standard": """1. Proven setups (2-year backtest, both years positive): GOLD Asian-range breakout and range reversion;
+   US100 London opening-range breakout and order block / FVG retest; US30 London and New York opening-range
+   breakouts and order block / FVG retest. Each fires ~once a week; together ~4-5 trades a week.
 2. All only WITH the H1 trend and not straight into unswept liquidity or an opposite order block.
 3. Breakouts: take a clean close beyond the range, not a wick that closes back inside; skip ranges that are already huge.
 4. Zone retests: the first touch of a fresh zone that closes back out - never a zone price already sliced through.
 5. Skip entries within 30 minutes of high-impact USD news (NFP, CPI, FOMC move gold and indices hardest).
 6. Index setups target the next liquidity level and trail 1R behind; let the trail work.
 7. Trials are small learning trades - judge them on the same standards, but don't force them.""",
-    "moderate": """1. Proven setups: GOLD Asian-range breakout; US100 London ORB; US30 London/New York ORBs; US30 OB/FVG retest.
+    "moderate": """1. Proven setups: GOLD Asian-range breakout and range reversion; US100 London ORB and OB/FVG retest;
+   US30 London/New York ORBs and OB/FVG retest.
 2. Prefer breakouts and retests that start after liquidity was taken on the other side and have room to the next pool.
 3. Skip anything straight into PDH/PDL, a session high/low or an opposite order block.
 4. Avoid entries 15 minutes either side of high-impact news; US data at 13:30 UTC moves US30/US100 sharply.
 5. US30 and US100 move together - two positions on both is one bet, be selective.
 6. After 2 losses in a row the bot halves risk - keep standards high, don't chase.""",
-    "aggressive": """1. Proven setups: GOLD Asian-range breakout; US100 London ORB; US30 London/NY ORBs; US30 OB/FVG retest.
+    "aggressive": """1. Proven setups: GOLD Asian-range breakout and range reversion; US100 London ORB and OB/FVG retest;
+   US30 London/NY ORBs and OB/FVG retest.
 2. Hunt the clean entry: a strong close beyond the range or out of the zone, not a wick.
 3. Never trade the news spike candle itself; momentum after it is fine.
 4. Quick management: breakeven at +1R; index trades trail 1R behind and target the next liquidity.

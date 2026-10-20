@@ -84,8 +84,8 @@ def test_explore_cfg_adds_trials_to_allowlist_and_enables_them():
     cfg = cfg_for(validate(DEFAULTS), "moderate")
     out = Engine._explore_cfg(None, cfg)
     assert "XAU_USD:session_breakout" in out["signals"]["allowlist"]
-    assert "*:zone_retest" in out["signals"]["allowlist"] and out["signals"]["zone_retest"] is True
-    assert "*:zone_retest" not in cfg["signals"]["allowlist"]        # original untouched
+    assert "BTC_USDT:london_orb@trail1.5" in out["signals"]["allowlist"] and out["signals"]["london_orb"] is True
+    assert "BTC_USDT:london_orb@trail1.5" not in cfg["signals"]["allowlist"]        # original untouched
     cfg["explore"]["enabled"] = False
     assert Engine._explore_cfg(None, cfg) is cfg
 
