@@ -19,11 +19,16 @@ class TG:
         pass
 
 
+class NoAI:
+    def budget_block(self, cfg, tier="fast"):
+        return "AI off in tests"
+
+
 def engine():
     db = DB(":memory:")
     db.ensure_accounts(MODES, 250)
     prices = PriceCache()
-    eng = Engine(db, SettingsStore(db), prices, {}, None, TG())
+    eng = Engine(db, SettingsStore(db), prices, {}, NoAI(), TG())
     prices.update("XAU_USD", 4142.0, 4142.0)
     return eng
 
@@ -50,3 +55,19 @@ def test_lab_signal_reaches_the_broker():
     asyncio.run(eng._choose_and_handle("lab", INSTRUMENTS["XAU_USD"], [gold_signal()], [], TUE))
     assert len(eng.broker.positions("lab")) == 1
     assert eng.db.scalar("SELECT accepted FROM decisions WHERE account='lab'") == 1
+
+
+def test_gate_prompts_judge_setups_not_risk_size():
+    from app.ai import gate
+    assert "Skipping costs nothing" not in gate.SYSTEM and "NEVER a reason to skip" in gate.SYSTEM
+    assert "at this risk" not in gate.SECOND_SYSTEM and "not your call" in gate.SECOND_SYSTEM
+
+
+def test_proven_setups_are_tagged_for_the_gate():
+    eng = engine()
+    sig = gold_signal()
+    asyncio.run(eng._choose_and_handle("standard", INSTRUMENTS["XAU_USD"], [sig], [], TUE))
+    assert sig.context["setup_status"].startswith("PROVEN")
+    trial = Signal("BTC_USDT", "LONG", "london_orb", 80000.0, 300.0, int(TUE.timestamp()), "x", regime="trend")
+    asyncio.run(eng._choose_and_handle("standard", INSTRUMENTS["BTC_USDT"], [trial], [], TUE))
+    assert trial.context["setup_status"].startswith("TRIAL")

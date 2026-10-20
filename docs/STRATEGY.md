@@ -221,6 +221,24 @@ Rerun it with `python -m app.backtest --mode <mode> --symbol all --days 730`. Th
 - **Live:** US30 and US100 (Yahoo futures feeds). UK100 and GER40 passed too, but free live data only covers their cash session (the research used ~23h data), so they stay research-only until a matching feed is found.
 - **Final pipeline at $250 (2 years, per market):** see SETTINGS.md. Every proven market is positive in all 3 accounts, but year 2 was weaker than year 1 for gold and US30.
 
+## 7e. First live days (19-20 Oct 2026): what blocked trading, and what changed
+
+- **Bug:** `adaptive.score` crashed on every setup that passed the filters, so no real account could open
+  a trade (fixed; each account/symbol is now evaluated in isolation, so one error can't stop the rest).
+- **Prices:** gold came from the Binance perp (~$7-8 above XM's spot) - now Swissquote spot, perp candles
+  shifted to spot. US30/US100 (Yahoo futures, ~10 min delayed) were rejected as stale - now accepted.
+- **AI gate bias:** at $250 every gold/index trade needs the 0.01-lot minimum (2.5-5% risk), so every one
+  went to Sonnet, whose prompt said "TAKE only if you would put real money on it at this risk" - it vetoed
+  on risk size, which the account rules already decided. Both prompts now: risk/lot/spread are never a
+  reason to skip; a PROVEN setup (both-years backtest) defaults to TAKE unless a concrete flaw is named
+  (late entry, level/opposite OB inside the target, news, playbook rule); TRIAL setups stay strict.
+  Shadow outcomes of "Sonnet veto" / "Haiku skip" will show whether the AI adds value over the rules.
+- **H1 "flat" filter kept** - tested on 2 years: the trades it blocks lose on the proven setups
+  (gold breakout -5.0R, -8.5R in year 2; US30 London ORB -4.6R; US30 zone retest -2.4R). Only US100
+  London ORB gained (+5.8R on 8 trades, losing in year 1) - too little evidence to carve out.
+- **Settings drift:** stops had been widened to 3-4 ATR and the 0.01-lot allowance to 8% on the Settings
+  page, making most trades too big to take and the rest risk up to 8%. Reset to the tested defaults.
+
 ## 8. First backtest result (honest)
 Run on 17 Oct 2026 on BTC:
 

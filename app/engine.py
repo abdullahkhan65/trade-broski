@@ -373,6 +373,8 @@ class Engine:
             return
         allowed.sort(key=lambda x: (x[0], x[1]), reverse=True)      # proven setups first, then best score
         _, _, mult, status, sig, trial = allowed[0]
+        sig.context["setup_status"] = ("TRIAL (exploration trade, minimum size)" if trial else
+                                       "PROVEN (on this account's backtested allowlist)" if main_allow else "TRIAL")
         sig.context["adaptive"] = f"{status}" + (f", risk x{mult:g}" if mult < 1 else "")
         await self.handle_signal(account, inst, sig, candles, now, risk_mult=mult, trial=trial)
 

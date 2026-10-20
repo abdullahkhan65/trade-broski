@@ -30,7 +30,7 @@ SCHEMA = {
 }
 
 SYSTEM = """You are the trade gate for ONE paper-trading account (virtual money) on an XM-style MT5
-account trading GOLD, forex majors and BTCUSD. A coded signal has fired. Decide TAKE or SKIP for THIS
+account trading GOLD, US30/US100, forex majors and BTCUSD. A coded signal has fired. Decide TAKE or SKIP for THIS
 signal only. You cannot change its side. Judge it against THIS account's trading style and playbook.
 
 Judge:
@@ -43,8 +43,17 @@ Judge:
 - Does it fit the account's style (e.g. a scalper wants quick momentum; a standard trader wants A-grade setups)?
 - Recent results on this signal type and instrument.
 
+Setup status (given below):
+- PROVEN = this setup made money in BOTH years of a 2-year backtest, after XM spreads, losers included.
+  Default to TAKE. SKIP only for a concrete flaw you can name: entry late/extended (well beyond the
+  trigger), straight into an unswept level or opposite order block inside the target, high-impact
+  news within the blackout, or a playbook rule it breaks. "Mixed" or "unclear" is NOT a reason to skip
+  a proven setup - its losing trades are already in the backtest.
+- TRIAL = not yet proven: prefer SKIP when evidence is mixed.
+
 Rules:
-- Prefer SKIP when evidence is mixed. Skipping costs nothing; bad trades cost money.
+- Position size, risk %, the 0.01-lot minimum, leverage and the spread are set and already checked by
+  code (cost filter, risk limits). They are NEVER a reason to skip.
 - stop_atr and target_atr within the account's limits given below. If a structure stop/target is
   given, use it unless the levels clearly argue otherwise.
 - leverage is only a suggestion; risk is fixed by code.
@@ -101,6 +110,7 @@ side: {sig.side}
 type: {sig.type}
 market regime: {sig.regime}
 strategy track record in this regime: {sig.context.get('adaptive', 'no history')}
+setup status: {sig.context.get('setup_status', 'TRIAL')}
 why: {sig.note}
 {f"structure stop {sig.stop_atr} ATR" + (f", target {sig.target_atr} ATR (next liquidity)" if sig.target_atr else "") if sig.stop_atr else ""}
 price: {sig.price:.{d}f}  ATR(14,{cfg['timeframe']}): {sig.atr:.{d}f}  spread: {spread if spread is not None else 'n/a'}
@@ -160,9 +170,10 @@ SECOND_SYSTEM = SYSTEM.replace(
     "A coded signal has fired and a first reviewer approved it. You are the senior reviewer giving a "
     "SECOND OPINION because this trade is high-stakes (large risk, the 0.01-lot minimum forcing extra risk, "
     "or a borderline first approval). Decide TAKE or SKIP") + """
-As the senior reviewer: don't just agree with the first reviewer. Look for the reason this trade fails -
-late entry, nearby opposite level, news, a regime the strategy is bad in, a playbook rule it breaks.
-TAKE only if you would put real money on it at this risk."""
+As the senior reviewer: don't just agree with the first reviewer. Check for a concrete reason this trade
+fails - late/extended entry, an unswept level or opposite order block inside the target, news, a playbook
+rule it breaks. If you can name one, SKIP and name it. If you can't, TAKE (a PROVEN setup's normal
+losers are already in its backtest). The risk size is fixed by the account's rules and is not your call."""
 
 
 def needs_second_opinion(cfg: dict, risk_pct: float, min_lot_forced: bool, confidence: float) -> str | None:
@@ -184,7 +195,8 @@ async def second_opinion(ai: AIClient, cfg: dict, prompt: str, first: dict, why:
                          risk_pct: float, risk_usd: float) -> AIResult:
     extra = (f"\nFIRST REVIEWER (Haiku) said TAKE, confidence {float(first.get('confidence', 0)):.2f}: "
              f"{first.get('reason', '')}\n"
-             f"THIS TRADE RISKS {risk_pct:.1f}% of equity (${risk_usd:.2f}). Why you are asked: {why}.\n")
+             f"Risk {risk_pct:.1f}% of equity (${risk_usd:.2f}), set by the account's rules - not a reason to skip. "
+             f"Why you are asked: {why}.\n")
     return await ai.call_json(cfg, f"second_opinion:{cfg['mode']}", SECOND_SYSTEM, prompt + extra, SCHEMA,
                               max_tokens=3000, tier="strong", effort="low")
 
