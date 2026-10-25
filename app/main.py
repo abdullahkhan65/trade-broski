@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from . import adaptive, audit, promoter, scorecard, shadow, smc
-from .ai import coach, postmortem, research
+from .ai import coach, outlook, postmortem, research
 from .ai.client import AIClient
 from .ai.review import current_playbook, daily_review, weekly_playbook
 from .alerts import telegram
@@ -166,6 +166,8 @@ def schedule_jobs() -> None:
                       next_run_time=datetime.now(timezone.utc) + timedelta(minutes=2))
     scheduler.add_job(job_audit, CronTrigger(hour=0, minute=15), misfire_grace_time=3600, coalesce=True)
     # Sunday 04:00 UTC: markets closed, before the 12:00 playbook rewrite (which then sees the proposals)
+    scheduler.add_job(job_outlook, CronTrigger(day_of_week="sun", hour=18, minute=0), misfire_grace_time=3 * 3600,
+                      coalesce=True)
     scheduler.add_job(job_research, CronTrigger(day_of_week="sun", hour=4, minute=0), misfire_grace_time=3600,
                       coalesce=True)
 
@@ -291,6 +293,19 @@ async def run_audit(day: datetime | None = None) -> list[dict]:
 async def job_audit() -> None:
     if store.current["audit"]["enabled"]:
         await run_audit()
+
+
+async def run_outlook() -> str:
+    r = store.current["research"]
+    msg = await outlook.run(ai, db, store.cfg("standard"), web_search=r["outlook_web_search"],
+                            max_searches=r["outlook_searches"])
+    await telegram.send(msg)
+    return msg
+
+
+async def job_outlook() -> None:
+    if store.current["research"].get("weekly_outlook"):
+        await run_outlook()
 
 
 async def job_research() -> None:
@@ -658,12 +673,44 @@ def api_floor(_: str = Depends(auth)) -> list[dict]:
             "reviews": reviews,
             "coach": {"day": coached["day"], **coached["coach"]} if coached else None,
             "lessons": coach.active_lessons(db, m),
+            # the week in R: what was taken vs what every skipped setup would have done (shadow outcomes)
+            "week": {"skips": shadow.summary(db, m, days=7),
+                     "taken": db.one("SELECT COUNT(*) n, COALESCE(SUM(pnl_r),0) r, COALESCE(SUM(pnl_usd),0) usd, "
+                                     "SUM(CASE WHEN pnl_usd > 0 THEN 1 ELSE 0 END) wins FROM trades "
+                                     "WHERE account=? AND closed_at >= ?", (m, iso(now - timedelta(days=7))))},
             "decisions": db.all("SELECT at, symbol, signal, side, accepted, reject_reason, signal_note FROM decisions "
                                 "WHERE account=? ORDER BY id DESC LIMIT 25", (m,)),
             "trades": db.all("SELECT symbol, side, signal, pnl_usd, pnl_r, exit_reason, closed_at, COALESCE(trial,0) trial "
                              "FROM trades WHERE account=? ORDER BY id DESC LIMIT 8", (m,)),
         })
     return out
+
+
+_outlook_running = False
+
+
+@app.get("/api/outlook")
+def api_outlook(_: str = Depends(auth)) -> dict:
+    return {"outlook": outlook.latest(db), "running": _outlook_running}
+
+
+@app.post("/api/outlook/run")
+async def api_outlook_run(_: str = Depends(auth)) -> dict:
+    global _outlook_running
+    if _outlook_running:
+        return {"started": False, "reason": "already running"}
+
+    async def go() -> None:
+        global _outlook_running
+        _outlook_running = True
+        try:
+            await run_outlook()
+        except Exception:  # noqa: BLE001
+            log.exception("weekly outlook failed")
+        finally:
+            _outlook_running = False
+    asyncio.create_task(go())
+    return {"started": True}
 
 
 @app.post("/api/audit/run")

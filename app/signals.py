@@ -380,6 +380,56 @@ def zone_retest(inst: Instrument, candles: list[dict], cfg: dict, atr: float) ->
     return None
 
 
+HTF_ZONE_MIN_AGE = 2 * 3600       # the H1 zone must be at least 2 hours old
+
+
+def htf_pullback(inst: Instrument, candles: list[dict], cfg: dict, atr: float) -> Signal | None:
+    """Trend continuation: in an H1 up-trend, price pulls back into a fresh BULLISH H1 order block / FVG and
+    the M15 candle closes back above it (mirror for down-trends). Catches sustained trends that the
+    session / opening-range breakouts miss. Stop beyond the H1 zone."""
+    if len(candles) < 200:
+        return None
+    trend = htf_trend(candles, cfg)
+    if trend not in ("up", "down"):
+        return None
+    last = candles[-1]
+    h1 = smc.hourly(candles[:-1])
+    if len(h1) < 30:
+        return None
+    trs = [max(c["h"] - c["l"], abs(c["h"] - p["c"]), abs(c["l"] - p["c"])) for p, c in zip(h1[-15:], h1[-14:])]
+    h1_atr = sum(trs) / len(trs)
+    e = cfg["exits"]
+    d = inst.decimals
+    want = "bull" if trend == "up" else "bear"
+    hour0 = last["t"] - last["t"] % 3600
+    this_hour = [c for c in candles[:-1] if c["t"] >= hour0]
+    for z in reversed(smc.zones(h1, h1_atr)):
+        if z.side != want or z.touched or last["t"] - z.t < HTF_ZONE_MIN_AGE:
+            continue
+        if want == "bull":
+            if any(c["l"] <= z.top for c in this_hour):
+                continue                                   # already touched earlier this hour
+            ok = (last["l"] <= z.top and last["l"] >= z.bottom - ZONE_MAX_DEPTH_ATR * atr
+                  and last["c"] > z.top and last["c"] > last["o"])
+            stop, side = z.bottom - ZONE_PAD_ATR * atr, "LONG"
+        else:
+            if any(c["h"] >= z.bottom for c in this_hour):
+                continue
+            ok = (last["h"] >= z.bottom and last["h"] <= z.top + ZONE_MAX_DEPTH_ATR * atr
+                  and last["c"] < z.bottom and last["c"] < last["o"])
+            stop, side = z.top + ZONE_PAD_ATR * atr, "SHORT"
+        if not ok:
+            continue
+        stop_atr = abs(last["c"] - stop) / atr
+        if stop_atr > e["max_stop_atr"]:
+            continue
+        name = "order block" if z.kind == "ob" else "fair value gap"
+        return Signal(inst.symbol, side, "htf_pullback", last["c"], atr, last["t"],
+                      f"H1 {trend}-trend pullback into a fresh H1 {z.side}ish {name} {z.bottom:.{d}f}-{z.top:.{d}f}, "
+                      f"closed back out", {"zone": f"H1 {z.kind}"}, stop_atr=round(max(stop_atr, e["min_stop_atr"]), 2))
+    return None
+
+
 SWEEP_LEVELS = ("PDH", "PDL", "Asian", "London", "New York", "equal")
 SWEEP_MAX_DEPTH_ATR = 1.0      # deeper than this is a breakout, not a sweep
 SWEEP_CLOSE_SHARE = 0.6        # close in the top 40% (long) / bottom 40% (short) of the candle
@@ -522,6 +572,10 @@ def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | N
                   or s.get("liquidity_targets")) else [])
     if s.get("zone_retest") and "zone_retest" not in disabled:
         sig = zone_retest(inst, candles, cfg, f.atr)
+        if sig:
+            out.append(sig)
+    if s.get("htf_pullback") and "htf_pullback" not in disabled:
+        sig = htf_pullback(inst, candles, cfg, f.atr)
         if sig:
             out.append(sig)
     for kind in ("london_orb", "ny_orb"):

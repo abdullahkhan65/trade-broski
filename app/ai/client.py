@@ -42,6 +42,9 @@ class AIResult:
     unavailable: bool = False   # True = blocked by budget/caps/disabled (not an API error)
 
 
+WEB_SEARCH_USD = 0.01          # Anthropic web search: $10 per 1000 searches
+
+
 def estimate_tokens(text: str) -> int:
     return int(len(text) / CHARS_PER_TOKEN) + 1
 
@@ -103,9 +106,10 @@ class AIClient:
                 return f"monthly Sonnet budget reached (${a['strong_budget_usd']:.2f})"
         return None
 
-    def _log(self, tier: str, purpose: str, tin: int, tout: int, ok: bool, error: str | None = None) -> float:
+    def _log(self, tier: str, purpose: str, tin: int, tout: int, ok: bool, error: str | None = None,
+             extra_usd: float = 0.0) -> float:
         p_in, p_out = _prices(tier)
-        cost = tin / 1e6 * p_in + tout / 1e6 * p_out
+        cost = tin / 1e6 * p_in + tout / 1e6 * p_out + extra_usd
         self.db.execute(
             "INSERT INTO cost_log(at, purpose, model, input_tokens, output_tokens, cost_usd, ok, error) "
             "VALUES (?,?,?,?,?,?,?,?)", (iso(), purpose, model_for(tier), tin, tout, cost, int(ok), error))
@@ -163,3 +167,54 @@ class AIClient:
             return AIResult(False, error="invalid JSON")
         self._log(tier, purpose, tin, tout, True)
         return AIResult(True, data=data)
+
+    # ------------------------------------------------------ web research
+    async def call_research(self, cfg: dict, purpose: str, system: str, user: str, max_searches: int = 8,
+                            max_tokens: int = 12000, effort: str = "medium") -> AIResult:
+        """Sonnet with Anthropic's web search tool -> plain-text research notes in data["text"].
+        (Search answers carry citations, which can't be combined with JSON output - structure it in a
+        second call_json.) Search fees ($10 / 1000 searches) are logged with the tokens."""
+        tier = "strong"
+        block = self.budget_block(cfg, tier)
+        if block:
+            return AIResult(False, error=block, unavailable=True)
+        assert self.client is not None
+        messages: list = [{"role": "user", "content": user}]
+        tin = tout = searches = 0
+        resp = None
+        try:
+            for _ in range(4):                      # the server pauses long search loops: resume up to 3x
+                resp = await self.client.with_options(timeout=300).messages.create(
+                    model=model_for(tier), max_tokens=max_tokens, system=system, messages=messages,
+                    thinking={"type": "adaptive"}, output_config={"effort": effort},
+                    tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": max_searches}],
+                )
+                u = resp.usage
+                tin += u.input_tokens
+                tout += u.output_tokens
+                stu = getattr(u, "server_tool_use", None)
+                searches += int(getattr(stu, "web_search_requests", 0) or 0) if stu else 0
+                if resp.stop_reason != "pause_turn":
+                    break
+                messages = [{"role": "user", "content": user}, {"role": "assistant", "content": resp.content}]
+        except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.APITimeoutError) as e:
+            self._log(tier, purpose, tin, tout, False, type(e).__name__, extra_usd=searches * WEB_SEARCH_USD)
+            return AIResult(False, error=f"{type(e).__name__}: temporary")
+        except anthropic.APIStatusError as e:
+            self._log(tier, purpose, tin, tout, False, f"{e.status_code} {e.message}"[:300],
+                      extra_usd=searches * WEB_SEARCH_USD)
+            return AIResult(False, error=f"API error {e.status_code}: {e.message}"[:300])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            self._log(tier, purpose, tin, tout, False, str(e)[:300], extra_usd=searches * WEB_SEARCH_USD)
+            return AIResult(False, error=str(e)[:300])
+        assert resp is not None
+        if resp.stop_reason == "refusal":
+            self._log(tier, purpose, tin, tout, False, "refusal", extra_usd=searches * WEB_SEARCH_USD)
+            return AIResult(False, error="model declined")
+        text = "".join(b.text for b in resp.content if b.type == "text").strip()
+        self._log(tier, purpose, tin, tout, bool(text), None if text else "no text",
+                  extra_usd=searches * WEB_SEARCH_USD)
+        return AIResult(bool(text), data={"text": text, "searches": searches},
+                        error=None if text else "no research text returned")

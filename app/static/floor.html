@@ -44,6 +44,20 @@
   .coach { background: var(--accent-soft); border-radius: 8px; padding: 9px 11px; font-size: 12px; color: var(--muted); }
   .coach div { margin: 2px 0; } .coach b { color: var(--text); font-weight: 500; }
   .lessons { margin: 0; padding-left: 16px; font-size: 12px; color: var(--muted); } .lessons li { margin: 3px 0; }
+  .wk { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .wk > div { background: var(--panel-2); border-radius: 8px; padding: 7px 9px; }
+  .wk .n { font-family: var(--mono); font-size: 15px; } .wk .k { color: var(--faint); font-size: 10.5px; }
+  .skrow { display: flex; gap: 6px; font-size: 11.5px; padding: 2px 0; color: var(--muted); }
+  .skrow .v { margin-left: auto; font-family: var(--mono); }
+  .outlook { margin-bottom: 8px; }
+  .ol-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+  .ol-card { background: var(--panel-2); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--muted); }
+  .ol-card .top { display: flex; gap: 8px; align-items: center; color: var(--text); margin-bottom: 4px; }
+  .ol-card ul { margin: 3px 0 0; padding-left: 16px; } .ol-card li { margin: 1px 0; }
+  .ol-card b { color: var(--text); font-weight: 500; }
+  .chip.bullish { background: var(--up-soft); color: var(--up); } .chip.bearish { background: var(--down-soft); color: var(--down); }
+  .chip.two-way { background: var(--warn-soft); color: var(--warn); }
+  @media (max-width: 1100px) { .ol-grid { grid-template-columns: 1fr; } }
   .days { display: flex; gap: 4px; flex-wrap: wrap; }
   .days span { font-family: var(--mono); font-size: 10.5px; padding: 2px 6px; border-radius: 5px; cursor: default; }
   .days .green { background: var(--up-soft); color: var(--up); } .days .amber { background: var(--warn-soft); color: var(--warn); }
@@ -67,6 +81,7 @@
     <button class="small" onclick="runAudit()">Run audit now</button>
     <span class="faint" id="updated"></span>
   </div>
+  <section class="trader outlook" id="outlook"><div class="none">Loading the weekly outlook…</div></section>
   <div class="floor" id="floor"><div class="none">Loading…</div></div>
 </div>
 <script>
@@ -110,6 +125,17 @@ function trader(T) {
     : '<div class="none">The first coaching note comes with the daily audit (00:15 UTC).</div>';
   const lessons = T.lessons.length ? `<ol class="lessons">${T.lessons.map((l) => `<li>${esc(l)}</li>`).join("")}</ol>`
     : '<div class="none">None yet - curated every Sunday from the reviews.</div>';
+  const wk = T.week, tk = wk.taken, skR = wk.skips.reduce((s, c) => s + c.total_r, 0), skN = wk.skips.reduce((s, c) => s + c.n, 0);
+  const verdictTxt = !skN ? "No skipped setups resolved yet this week."
+    : skR < -0.5 ? `Skipping saved about <b class="up">${(-skR).toFixed(1)}R</b>: what was skipped would have lost.`
+    : skR > 0.5 ? `Skipping cost about <b class="down">${skR.toFixed(1)}R</b> of winners - watch the reasons below.`
+    : "Skipped setups would have roughly broken even.";
+  const week = `<div class="wk"><div><div class="n ${cls(tk.r)}">${tk.n} · ${(tk.r >= 0 ? "+" : "") + tk.r.toFixed(1)}R</div>
+      <div class="k">taken: ${tk.wins || 0} won · ${usd(tk.usd, true)}</div></div>
+      <div><div class="n ${cls(-skR)}">${skN} · ${(skR >= 0 ? "+" : "") + skR.toFixed(1)}R</div><div class="k">skipped: what they'd have made</div></div></div>
+    <div class="why" style="margin-top:6px">${verdictTxt}</div>
+    ${wk.skips.map((c) => `<div class="skrow"><span>${esc(c.category)}</span><span class="faint">${c.n} skipped, ${c.wins} would have won</span>
+      <span class="v ${cls(-c.total_r)}">${(c.total_r >= 0 ? "+" : "") + c.total_r.toFixed(1)}R</span></div>`).join("")}`;
   const days = T.history.length ? `<div class="days">${T.history.map((r) => `<span class="${r.grade}" title="${esc(r.items.filter((i) => i.level !== "green")
       .map((i) => i.area + ": " + i.message).join("\n") || "all green")}">${r.day.slice(5)}</span>`).join("")}</div>`
     : '<div class="none">First daily audit runs at 00:15 UTC.</div>';
@@ -118,6 +144,7 @@ function trader(T) {
       style="margin-left:auto">${T.today.grade === "green" ? "all good" : T.today.grade}</span></h3>
     <div class="eq">${a.equity.toFixed(2)} <span class="${cls(a.pnl_today)}" style="font-size:13px">${usd(a.pnl_today, true)} today</span></div>
     <div class="sub">${a.status.replace("_", " ")}${a.status_reason ? " · " + esc(a.status_reason) : ""}</div>
+    <div class="h">This week: taken vs skipped (7 days)</div>${week}
     <div class="h">Coach's note</div>${coach}
     <div class="h">Today's audit</div>${findings}
     <div class="h">Signal funnel today</div>
@@ -135,7 +162,34 @@ function trader(T) {
   </section>`;
 }
 
+function outlookHtml(O) {
+  const o = O.outlook;
+  const head = `<h3>Weekly outlook ${o ? `<span class="faint" style="font-weight:400">week of ${o.week} · ${o.model.includes("sonnet") ? "Sonnet" : "Haiku"}
+      · ${o.searches} web searches</span>` : ""}<button class="small" style="margin-left:auto" onclick="runOutlook()" ${O.running ? "disabled" : ""}>
+      ${O.running ? "Writing…" : "Write it now"}</button></h3>`;
+  if (!o) return head + '<div class="none" style="margin-top:8px">The first outlook is written on Sunday at 18:00 UTC (11 PM PKT), before the markets open.</div>';
+  const card = (x) => `<div class="ol-card"><div class="top"><b>${nm(x.symbol)}</b><span class="chip ${x.bias}">${x.bias}</span></div>
+      <div>${esc(x.plan)}</div>
+      ${x.drivers.length ? `<div style="margin-top:4px"><b>Drivers:</b> ${x.drivers.map(esc).join("; ")}</div>` : ""}
+      ${x.key_events.length ? `<div style="margin-top:4px"><b>Events</b><ul>${x.key_events.slice(0, 5).map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div>` : ""}
+      ${x.levels.length ? `<div style="margin-top:4px"><b>Levels:</b> ${x.levels.slice(0, 5).map(esc).join(" · ")}</div>` : ""}
+      ${x.caution_days.length ? `<div style="margin-top:4px" class="warn">⚠ ${x.caution_days.map(esc).join(" · ")}</div>` : ""}
+      ${x.risk ? `<div style="margin-top:4px"><b>Invalidated if:</b> ${esc(x.risk)}</div>` : ""}</div>`;
+  return head + `<p style="margin:8px 0 0;color:var(--text)">${esc(o.week_summary)}</p>
+    ${o.global_risks.length ? `<div class="why">Global risks: ${o.global_risks.map(esc).join(" · ")}</div>` : ""}
+    <div class="ol-grid">${o.instruments.map(card).join("")}</div>`;
+}
+async function runOutlook() {
+  const r = await api("/api/outlook/run", { method: "POST" });
+  toast(r.started ? "Writing the weekly outlook: web research takes 1-3 minutes" : r.reason);
+  setTimeout(load, 2000);
+}
+
 async function load() {
+  try {
+    const O = await api("/api/outlook"), ol = document.getElementById("outlook"), h = outlookHtml(O);
+    if (ol._html !== h) { ol.innerHTML = h; ol._html = h; }
+  } catch (e) { /* the traders still load */ }
   try {
     const rows = await api("/api/floor");
     const html = rows.map(trader).join("");

@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from . import adaptive, risk, scorecard, smc
 from .ai import gate
 from .ai.client import AIClient
-from .ai import coach
+from .ai import coach, outlook
 from .ai.review import current_playbook
 from .alerts import Telegram
 from .broker import PaperBroker
@@ -600,6 +600,7 @@ class Engine:
             "digest": bias_for(self.db, inst.symbol),
             "events": events_between(self.db, now, now + timedelta(hours=4), inst.currencies, ("High", "Medium")),
             "headlines": recent_headlines(self.db, inst.symbol, hours=6, limit=6),
+            "outlook": outlook.gate_line(self.db, inst.symbol),
         }
 
     # =============================================================== helpers

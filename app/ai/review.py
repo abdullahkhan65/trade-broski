@@ -16,7 +16,7 @@ from .client import AIClient
 SEED_PLAYBOOKS = {
     "standard": """1. Proven setups (2-year backtest, both years positive): GOLD Asian-range breakout and range reversion;
    US100 London opening-range breakout and order block / FVG retest; US30 London and New York opening-range
-   breakouts and order block / FVG retest. Each fires ~once a week; together ~4-5 trades a week.
+   breakouts, order block / FVG retest and H1 trend pullback. Each fires ~once a week or less; together ~4-5 trades a week.
 2. All only WITH the H1 trend and not straight into unswept liquidity or an opposite order block.
 3. Breakouts: take a clean close beyond the range, not a wick that closes back inside; skip ranges that are already huge.
 4. Zone retests: the first touch of a fresh zone that closes back out - never a zone price already sliced through.

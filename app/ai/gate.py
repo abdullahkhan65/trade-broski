@@ -137,6 +137,7 @@ upcoming events:
 {chr(10).join(ev_lines)}
 recent headlines:
 {chr(10).join(head_lines)}
+this week's outlook (context only - it never overrides the setup rules): {news.get('outlook') or 'none'}
 
 PLAYBOOK FOR THIS ACCOUNT (always follow it)
 {playbook or '(empty - no lessons yet)'}

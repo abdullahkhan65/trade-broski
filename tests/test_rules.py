@@ -174,3 +174,19 @@ def test_upgrade_v4_to_v5_only_changes_allowlists_and_trials():
     assert cfg["explore"]["trials"][0] == "BTC_USDT:london_orb@trail1.5"
     assert cfg["risk"]["risk_per_trade_pct"] == 1.2
     assert db.scalar("SELECT COUNT(*) FROM playbook_versions WHERE source='seed-v5'") == len(MODES)
+
+
+def test_upgrade_v5_to_v6_adds_us30_trend_pullback_once():
+    db = DB(":memory:")
+    old = validate(DEFAULTS)
+    for m in ("standard", "moderate", "aggressive"):
+        old["modes"][m]["signals"]["allowlist"] = [x for x in old["modes"][m]["signals"]["allowlist"]
+                                                   if "htf_pullback" not in x]
+        old["modes"][m]["signals"]["htf_pullback"] = False
+    db.execute("INSERT INTO settings_versions(at, source, data) VALUES (?,?,?)", (iso(), "ui", json.dumps(old)))
+    db.kv_set("settings_defaults_version", 5)
+    store = SettingsStore(db)
+    for m in ("standard", "moderate", "aggressive"):
+        allow = store.cfg(m)["signals"]["allowlist"]
+        assert allow.count("US30:htf_pullback@liq+trail1") == 1 and store.cfg(m)["signals"]["htf_pullback"] is True
+    assert store.cfg("lab")["signals"]["htf_pullback"] is True

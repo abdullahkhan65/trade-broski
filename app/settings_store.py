@@ -21,7 +21,7 @@ from typing import Any
 from .db import DB, iso
 
 MODES = ["standard", "moderate", "aggressive", "lab"]
-DEFAULTS_VERSION = 5          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
+DEFAULTS_VERSION = 6          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
 MODE_LABELS = {
     "standard": "Standard",
     "moderate": "Moderate",
@@ -65,7 +65,10 @@ STALL_FAST = {"stall_exit": True, "stall_min_progress": 0.35, "stall_candles": 3
 # These 7 are ALL the setups on the live markets that passed (~4.6 trades a week per account in the backtest).
 PROVEN = ["XAU_USD:session_breakout", "US100:london_orb@liq+trail1", "US30:zone_retest@liq+trail1",
           "US30:ny_orb@liq+trail1", "US30:london_orb@liq+trail1",
-          "US100:zone_retest@trail1.5", "XAU_USD:range_reversion@trail1.5"]
+          "US100:zone_retest@trail1.5", "XAU_USD:range_reversion@trail1.5",
+          # 25 Oct 2026: H1 trend pullback - US30 passed all 9 exit x style combinations (both years); gold and
+          # US100 failed. ~0.3 trades a week, only ~30 trades in 2 years: thin evidence, watched by the audit.
+          "US30:htf_pullback@liq+trail1"]
 # Trials: near misses that can actually trade at $250 within the trial risk cap (0.01 lot of gold or an
 # index risks 2.5-5% - far above it, so those can't be trials). Setups that lost in both years were dropped.
 TRIALS = ["BTC_USDT:london_orb@trail1.5", "BTC_USDT:range_reversion", "GBP_USD:range_reversion@liq+trail1"]
@@ -76,7 +79,7 @@ def _explore(budget: float, max_risk: float, per_day: int) -> dict:
             "trials": list(TRIALS)}
 
 
-NEW_SIGNALS = {"zone_retest": True, "liquidity_targets": False, "asian_range_min_atr": 0.0, "asian_range_max_atr": 0.0}
+NEW_SIGNALS = {"zone_retest": True, "htf_pullback": True, "liquidity_targets": False, "asian_range_min_atr": 0.0, "asian_range_max_atr": 0.0}
 
 MODE_DEFAULTS: dict[str, dict[str, Any]] = {
     "standard": {
@@ -225,7 +228,8 @@ DEFAULTS: dict[str, Any] = {
         "swap_US100_long": -600.0, "swap_US100_short": -200.0,
     },
     "engine": {"stop_check_seconds": 3},
-    "research": {"enabled": True, "min_lab_trades": 10, "min_lab_avg_r": 0.05, "ai_review": True},
+    "research": {"enabled": True, "min_lab_trades": 10, "min_lab_avg_r": 0.05, "ai_review": True,
+                 "weekly_outlook": True, "outlook_web_search": True, "outlook_searches": 8},
     "audit": {"enabled": True, "post_mortems": True, "coaching": True},
     "modes": copy.deepcopy(MODE_DEFAULTS),
 }
@@ -324,6 +328,14 @@ FIELDS: list[Field] = [
                "Nothing changes until you approve it in the Learning tab."),
     Field("research.min_lab_trades", "Lab trades needed before a pair is considered", "Research (weekly)", "int", 5, 200, 1),
     Field("research.min_lab_avg_r", "...with an average of at least (R)", "Research (weekly)", "float", -1, 2, 0.05),
+    Field("research.weekly_outlook", "Weekly outlook every Sunday (plan per instrument)", "Research (weekly)", "bool",
+          help="Sunday 18:00 UTC, before the markets open: Sonnet scans the week ahead (central banks, US data, "
+               "earnings, geopolitics, crypto) and writes a plan per instrument - bias, key events with times, "
+               "levels, which setups suit the week, days to stand aside. Floor page + Telegram; a one-line summary "
+               "is given to the AI gate as context. ~$0.15-0.40 a week."),
+    Field("research.outlook_web_search", "...let it search the web", "Research (weekly)", "bool",
+          help="Anthropic's web search tool ($0.01 per search). Off = our own calendar and headlines only."),
+    Field("research.outlook_searches", "...max web searches", "Research (weekly)", "int", 1, 20, 1),
     Field("research.ai_review", "Weekly research review by Sonnet", "Research (weekly)", "bool",
           help="Sonnet reads the week's results, Lab league table, skipped-signal outcomes and proposals, and "
                "writes a short review with recommendations (~$0.05 a week)."),
@@ -394,6 +406,9 @@ MODE_FIELDS: list[Field] = [
           help="First close beyond the first hour after the NY open (09:30-10:30 NY time), within 3 hours."),
     Field("signals.pdh_breakout", "Previous-day high/low breakout", "Signals", "bool",
           help="First close of the day beyond yesterday's high/low with a strong candle."),
+    Field("signals.htf_pullback", "H1 trend pullback into a fresh H1 order block / FVG", "Signals", "bool",
+          help="Trend continuation: in an H1 up-trend, price dips into a fresh bullish H1 zone and the M15 candle "
+               "closes back above it (mirror for down-trends). Proven on US30 only."),
     Field("signals.zone_retest", "Order block / FVG retest (SMC)", "Signals", "bool",
           help="First return into a fresh order block or fair value gap that closes back out of it. Stop beyond the zone."),
     Field("signals.liquidity_targets", "Target the next liquidity level", "Signals", "bool",
@@ -597,6 +612,13 @@ class SettingsStore:
             for mode, text in SEED_PLAYBOOKS.items():
                 self.db.execute("INSERT INTO playbook_versions(mode, at, content, source) VALUES (?,?,?,?)",
                                 (mode, iso(), text, "seed-v5"))
+        if version < 6:
+            # v6 (25 Oct 2026): US30 H1 trend pullback joins the allowlists; the Lab trades it too (live data)
+            for m in ("standard", "moderate", "aggressive"):
+                if "US30:htf_pullback@liq+trail1" not in data["modes"][m]["signals"]["allowlist"]:
+                    data["modes"][m]["signals"]["allowlist"].append("US30:htf_pullback@liq+trail1")
+            for m in MODES:
+                data["modes"][m]["signals"]["htf_pullback"] = True
         self.save(data, f"upgrade:defaults-v{DEFAULTS_VERSION}")
         self.db.kv_set("settings_defaults_version", DEFAULTS_VERSION)
 

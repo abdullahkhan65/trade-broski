@@ -108,6 +108,7 @@ Gold on M15 (ATR ~$8 → stop $12): 0.01 lot already risks $12 = 4.8%. Standard 
 | **Skipped-winner reviews** | 00:15 UTC | each AI skip (Haiku/Sonnet veto, not rule filters) that would have hit target, max 3/day: fair skip or too cautious? judged on what was visible then | too-cautious lessons ("take X when...") | ~$0.0015/day |
 | **Winner reviews** | 00:15 UTC | winning trades (≥0.5R), max 2/day: good process or lucky? | what to repeat / the flaw to avoid | ~$0.001/day |
 | **Coaching note** | 00:15 UTC | per trader (Haiku): did well, fix, focus for today - from the audit and all reviews | Floor page, Audit tab, Telegram | ~$0.0004/day |
+| **Weekly outlook** | Sun 18:00 UTC | Sonnet + web search (max 8 searches): the week's central banks, data, earnings, geopolitics, crypto; then a plan per instrument | Floor page, Telegram; a one-line context for the AI gate (never overrides rules) | ~$0.25-0.35/week |
 | **Lesson curation** | Sun 12:00 UTC | Sonnet (Haiku fallback): all raw lessons -> max 10 active ones; duplicates merged, contradicted ones dropped | the AI gate reads the active lessons before every trade; the playbook rewrite starts from them | ~$0.06/week |
 | **Weekly research review** | Sunday, after the research job | all of the above (Sonnet) | nothing: a written review with recommendations (Research tab + Telegram) | ~$0.05/week |
 
@@ -246,6 +247,14 @@ Rerun it with `python -m app.backtest --mode <mode> --symbol all --days 730`. Th
   25 / 20 / 20%), both years positive. ~4.5 trades a week per account in total - that is the ceiling the
   evidence supports on these markets. Trials cut to BTC London ORB (trail 1.5, both years positive),
   BTC and GBP range reversion: gold/index trials can't trade at $250 inside the trial risk cap.
+
+- **H1 trend pullback (25 Oct 2026, `htf_pullback`):** in an H1 trend, the first dip into a fresh H1
+  order block / FVG that the M15 candle closes back out of. 2 years, real $250 sizing, 3 exits x 3 styles:
+  GOLD fails everywhere (H1 zones too wide for a 0.01 lot - 11-15 trades, both years negative), US100 fails
+  (year 1 negative), US30 passes all 9 combinations (liq+trail1: 66% wins, $250 -> $334-337, max DD ~10%) -
+  added to the allowlists as the 8th proven setup. Only ~30 trades in 2 years: thin evidence, so the audit's
+  drift check watches it. The real accounts' trade count is now ~5 a week; daily trades are not supported
+  by the evidence on these markets - the daily learning comes from the Lab and the skipped-setup tracking.
 
 ## 8. First backtest result (honest)
 Run on 17 Oct 2026 on BTC:

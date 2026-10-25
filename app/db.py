@@ -287,6 +287,14 @@ CREATE TABLE IF NOT EXISTS lesson_sets (
     data TEXT NOT NULL                          -- JSON: lessons, dropped, model
 );
 
+CREATE TABLE IF NOT EXISTS weekly_outlooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    week TEXT NOT NULL,                         -- Monday of the week it is for
+    at TEXT NOT NULL,
+    model TEXT NOT NULL,
+    data TEXT NOT NULL                          -- JSON: week_summary, global_risks, instruments[], research
+);
+
 CREATE TABLE IF NOT EXISTS kv (
     k TEXT PRIMARY KEY,
     v TEXT
