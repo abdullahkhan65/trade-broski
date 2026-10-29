@@ -58,6 +58,13 @@
   .chip.bullish { background: var(--up-soft); color: var(--up); } .chip.bearish { background: var(--down-soft); color: var(--down); }
   .chip.two-way { background: var(--warn-soft); color: var(--warn); }
   @media (max-width: 1100px) { .ol-grid { grid-template-columns: 1fr; } }
+  .causes { display: flex; gap: 4px; flex-wrap: wrap; margin: 2px 0 4px 44px; }
+  .causes .chip { font-size: 10px; }
+  .loop-grid { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 16px; margin-top: 10px; }
+  @media (max-width: 1100px) { .loop-grid { grid-template-columns: 1fr; } }
+  .loop-grid .skrow .v { min-width: 52px; text-align: right; }
+  .hyp { padding: 6px 0; border-top: 1px solid var(--line); }
+  .hyp:first-child { border-top: 0; }
   .days { display: flex; gap: 4px; flex-wrap: wrap; }
   .days span { font-family: var(--mono); font-size: 10.5px; padding: 2px 6px; border-radius: 5px; cursor: default; }
   .days .green { background: var(--up-soft); color: var(--up); } .days .amber { background: var(--warn-soft); color: var(--warn); }
@@ -82,10 +89,12 @@
     <span class="faint" id="updated"></span>
   </div>
   <section class="trader outlook" id="outlook"><div class="none">Loading the weekly outlook…</div></section>
+  <section class="trader outlook" id="loop"><div class="none">Loading the learning loop…</div></section>
   <div class="floor" id="floor"><div class="none">Loading…</div></div>
 </div>
 <script>
-const NAMES = { XAU_USD: "GOLD", EUR_USD: "EURUSD", GBP_USD: "GBPUSD", USD_JPY: "USDJPY", BTC_USDT: "BTCUSD", US30: "US30Cash", US100: "US100Cash" };
+const NAMES = { XAU_USD: "GOLD", XAG_USD: "SILVER", EUR_USD: "EURUSD", GBP_USD: "GBPUSD", USD_JPY: "USDJPY", BTC_USDT: "BTCUSD",
+  US30: "US30Cash", US100: "US100Cash", US500: "US500Cash", WTI: "OILCash", AUD_USD: "AUDUSD", EUR_JPY: "EURJPY", GBP_JPY: "GBPJPY" };
 const nm = (s) => NAMES[s] || s;
 const hm = (iso) => { const d = new Date(iso); return d.toISOString().slice(5, 16).replace("T", " "); };
 const side = (s) => `<span class="chip ${s === "LONG" ? "ok" : "bad"}">${s === "LONG" ? "BUY" : "SELL"}</span>`;
@@ -102,7 +111,8 @@ function trader(T) {
     : '<div class="row none">No setups yet.</div>';
   const trades = T.trades.length ? T.trades.map((t) => `<div class="tr"><span class="t faint mono">${hm(t.closed_at)}</span>
       <b>${nm(t.symbol)}</b>${side(t.side)}${t.trial ? '<span class="chip">trial</span>' : ""}<span class="faint">${esc(t.exit_reason)}</span>
-      <span class="r ${cls(t.pnl_usd)}">${t.pnl_r == null ? "" : (t.pnl_r >= 0 ? "+" : "") + t.pnl_r.toFixed(2) + "R"}</span></div>`).join("")
+      <span class="r ${cls(t.pnl_usd)}">${t.pnl_r == null ? "" : (t.pnl_r >= 0 ? "+" : "") + t.pnl_r.toFixed(2) + "R"}</span></div>
+      ${t.causes ? `<div class="causes">${t.causes.split(",").map((c) => `<span class="chip">${esc(c)}</span>`).join("")}</div>` : ""}`).join("")
     : '<div class="none">No closed trades yet.</div>';
   const pms = T.post_mortems.length ? T.post_mortems.map((p) => `<div class="pm"><div class="top">
       <span class="chip ${p.verdict === "bad decision" ? "bad" : p.verdict === "bad luck" ? "good" : ""}">${p.verdict}</span>
@@ -179,6 +189,31 @@ function outlookHtml(O) {
     ${o.global_risks.length ? `<div class="why">Global risks: ${o.global_risks.map(esc).join(" · ")}</div>` : ""}
     <div class="ol-grid">${o.instruments.map(card).join("")}</div>`;
 }
+function loopHtml(L) {
+  const x = L.lab;
+  const season = `<div class="h" style="margin-top:0">Lab - the learning account</div>
+    <div class="eq">Season ${x.season} <span class="faint" style="font-size:13px">since ${hm(x.season_started)}</span></div>
+    <div class="wk"><div><div class="n ${cls(x.season_r)}">${x.season_trades} · ${(x.season_r >= 0 ? "+" : "") + x.season_r.toFixed(1)}R</div>
+      <div class="k">this season: trades · ${usd(x.season_usd, true)}</div></div>
+      <div><div class="n ${cls(x.all_time_usd)}">${usd(x.all_time_usd, true)}</div><div class="k">all time, refills counted (${usd(x.refilled)} refilled)</div></div></div>
+    <div class="why">The Lab takes every signal, so it loses money by design - that is the price of the data. Below
+      ${usd(x.refill_below)} (or when paused) it is refilled and a new season starts, so it never stops trading.</div>`;
+  const causes = x.causes.length ? x.causes.map((c) => `<div class="skrow"><span>${esc(c.cause)}</span>
+      <span class="faint">${c.n} losses · ${c.setups.map(([k, n]) => esc(k.replace(/^[^:]+/, nm)) + " ×" + n).join(", ")}</span>
+      <span class="v down">${c.r.toFixed(1)}R</span></div>`).join("")
+    : '<div class="none">No losing trades tagged yet - every loss from now on gets its causes.</div>';
+  const res = { passed: "good", failed: "", error: "bad" };
+  const hyps = L.hypotheses.length ? L.hypotheses.map((h) => `<div class="hyp"><div class="top" style="display:flex;gap:6px;align-items:center">
+      <span class="chip ${res[h.result] || ""}">${h.result}</span><b>${esc(h.setup)}</b><span class="mono">${esc(h.rule)}</span>
+      <span class="faint" style="margin-left:auto">${hm(h.at)}</span></div>
+      <div class="faint">Idea: ${esc(h.why)}</div><div>${esc(h.reason || "")}${h.proposal_id ? ` · proposal #${h.proposal_id} in the Research tab` : ""}</div></div>`).join("")
+    : '<div class="none">The first hypotheses are written on Sunday with the research job (04:00 UTC).</div>';
+  return `<h3>Learning loop <span class="faint" style="font-weight:400">loss causes → AI hypothesis → test on unseen data → your approval</span>
+      ${L.pending ? `<a class="chip high" style="margin-left:auto" href="/">${L.pending} proposal${L.pending > 1 ? "s" : ""} waiting in the Research tab</a>` : ""}</h3>
+    <div class="loop-grid"><div>${season}</div>
+      <div><div class="h" style="margin-top:0">Why trades lost (all accounts, 7 days)</div>${causes}</div>
+      <div><div class="h" style="margin-top:0">Hypotheses tested (weekly)</div>${hyps}</div></div>`;
+}
 async function runOutlook() {
   const r = await api("/api/outlook/run", { method: "POST" });
   toast(r.started ? "Writing the weekly outlook: web research takes 1-3 minutes" : r.reason);
@@ -189,6 +224,10 @@ async function load() {
   try {
     const O = await api("/api/outlook"), ol = document.getElementById("outlook"), h = outlookHtml(O);
     if (ol._html !== h) { ol.innerHTML = h; ol._html = h; }
+  } catch (e) { /* the traders still load */ }
+  try {
+    const L = await api("/api/loop"), lp = document.getElementById("loop"), h = loopHtml(L);
+    if (lp._html !== h) { lp.innerHTML = h; lp._html = h; }
   } catch (e) { /* the traders still load */ }
   try {
     const rows = await api("/api/floor");

@@ -45,7 +45,8 @@ WINDOW = 600                      # candles passed to the signal engine per step
 
 # ------------------------------------------------------------------ data
 async def download(symbol: str, days: int, tf: str) -> list[dict]:
-    inst = INSTRUMENTS[symbol]
+    from .instruments import EXTRA_INSTRUMENTS
+    inst = INSTRUMENTS.get(symbol) or EXTRA_INSTRUMENTS[symbol]
     if inst.history_symbol:
         return await dukascopy.download(inst.history_symbol, inst.history_point, days, bucket=tf_seconds(tf))
     start = datetime.now(timezone.utc) - timedelta(days=days)
@@ -211,7 +212,7 @@ def simulate(inst: Instrument, candles: list[dict], signals: dict[int, object], 
                     reason = "trailing stop"
                 trades.append({"signal": pos["sig"].type, "regime": pos["sig"].regime, "side": o.side,
                                "lots": o.lots, "entry": o.entry, "exit": exit_px, "pnl": net,
-                               "r": net / o.risk_usd, "reason": reason,
+                               "r": net / o.risk_usd, "reason": reason, "f": (pos["sig"].context or {}).get("f"),
                                "opened": datetime.fromtimestamp(pos["t"], tz=timezone.utc).isoformat(),
                                "closed": datetime.fromtimestamp(c["t"], tz=timezone.utc).isoformat()})
                 closed_today.append({"pnl_usd": net, "exit_reason": reason})

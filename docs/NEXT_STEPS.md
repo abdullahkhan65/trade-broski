@@ -26,6 +26,13 @@
 - [ ] Telegram delivery
 - [ ] 7 days running on the VPS
 
+## Decisions waiting for you (30 Oct 2026)
+1. **Standard/Moderate allowlists:** the re-test (STRATEGY.md §7f) says GOLD Asian breakout (year 2 negative), GOLD range
+   reversion and US30 NY ORB (fail in Moderate), US30/US100 zone retests (year 1 negative in Standard) are no longer
+   "proven" under today's exits. They were left in place. Options: keep and let live results + weekly removals decide,
+   or remove now (fewer trades).
+2. **MT5 specs** for GER40Cash, UK100Cash and OILCash (contract size, min lot, spread, swaps) - current values are estimates.
+
 ## Do this next (in order)
 
 1. **Accounts** (DEPLOYMENT.md §1): Anthropic key with $5 prepaid and auto-reload off (done ✅), and the Telegram bot. Prices need no accounts.

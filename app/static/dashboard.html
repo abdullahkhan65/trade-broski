@@ -499,7 +499,7 @@ async function researchView() {
   const props = R.proposals.length ? R.proposals.map((p) => {
       const bt = p.evidence && p.evidence.backtest;
       return `<tr><td class="num">${mtTime(p.at)}</td><td>${LABEL[p.account] || p.account}</td>
-        <td><span class="chip ${p.action === "add" ? "good" : p.action === "set" ? "" : "bad"}">${p.action}</span> <b>${esc(p.item)}</b></td>
+        <td><span class="chip ${p.action === "add" ? "good" : p.action === "set" || p.action === "rule" ? "" : "bad"}">${p.action}</span> <b>${esc(p.item)}</b></td>
         <td class="wrap">${esc(p.reason)}${bt ? ` · 2y: $250 → $${bt.equity}, max DD ${bt.max_dd_pct}%` : ""}</td>
         <td>${p.status === "pending" ? `<button class="small" onclick="decide(${p.id},'approve')">Approve</button>
           <button class="small ghost" onclick="decide(${p.id},'reject')">Reject</button>` : `<span class="chip">${p.status}</span>`}</td></tr>`; }).join("")
@@ -515,7 +515,7 @@ async function researchView() {
       Allowlisted pairs that lose live are proposed for removal. Nothing changes until you approve.
       <button class="small" style="margin-left:6px" onclick="runResearch()" ${R.running ? "disabled" : ""}>${R.running ? "Running…" : "Run research now"}</button></p>
     <div class="section-title" style="margin-top:0">Weekly research review</div>${review}
-    <div class="section-title">Allowlist proposals</div>
+    <div class="section-title">Proposals: allowlist changes, AI calibration, tested rules</div>
     <table><tr><th>When</th><th>Account</th><th>Change</th><th>Evidence</th><th></th></tr>${props}</table>
     <div class="section-title">Lab league table (last 60 days)</div>
     <table><tr><th>Symbol</th><th>Strategy</th><th class="num">Trades</th><th class="num">Win %</th><th class="num">Avg R</th><th class="num">Total R</th></tr>${lab}</table>

@@ -35,7 +35,7 @@ One Python process (FastAPI + asyncio + APScheduler) and one SQLite file. There 
 | `app/instruments.py` | The 5 symbols as XM defines them: MT5 name, digits/point, contract size, lot limits; P&L and pip-value maths |
 | `app/sessions.py` | Market hours, London/NY sessions, Asian range, weekly close, rollover (DST-aware) |
 | `app/indicators.py` | EMA, RSI, ATR and percentile in pure Python |
-| `app/signals.py` | Filters, regime detection, the 5 strategies, H1 trend filter (`htf_trend`) |
+| `app/signals.py` | Filters, regime detection, the strategies, H1 trend filter (`htf_trend`). `raw_signals` (filters + every strategy, with features) then `evaluate` (allowlist, exit profile, per-setup rules, conflicts, H1, SMC) - the live engine, backtest and study all run this code |
 | `app/smc.py` | Smart Money Concepts as rules: PDH/PDL, session highs/lows, liquidity pools and equal highs/lows, sweeps, FVGs, order blocks; location filter; AI context text |
 | `app/risk.py` | Lot sizing (0.01 step, min-lot rule), leverage and margin caps, portfolio rules, loss limits and daily target, day rules (trades/day, losing streak, protect a good day), cost filter |
 | `app/broker.py` | XM paper broker for all accounts: XM spreads, fills, stops and gaps, breakeven, partial closes, swap in points, stop-out |
@@ -59,6 +59,10 @@ One Python process (FastAPI + asyncio + APScheduler) and one SQLite file. There 
 | `app/ai/postmortem.py` | Haiku post-mortem of each losing trade: bad luck or bad decision |
 | `app/ai/outlook.py` | Weekly outlook (Sun 18:00 UTC): Sonnet + web search researches the week ahead, then a per-instrument plan (bias, drivers, events with times, levels, setups that suit the week, caution days). Floor page + Telegram; one line per instrument goes into the AI gate as context |
 | `app/ai/coach.py` | Skipped-winner reviews (fair skip / too cautious), winner reviews (good process / lucky), daily coaching note, weekly lesson curation (max 10 active lessons, read by the AI gate with the playbook) |
+| `app/study.py` | The 2-year setup study (`python -m app.study grid`): scans each market once with every strategy, caches the signals with their features (`data/history/scan-<SYMBOL>.pkl`, only new candles are scanned later), replays every setup × exit profile × account at $250, both-years split; PROVEN and AGGRESSIVE bars |
+| `app/hypothesis.py` | Walk-forward rule tester: year-1 breakdown of a setup by hour/day/regime/side/volatility/ADX (`profile`), and baseline vs one-knob rule on year 2, which the AI never saw (`test`) |
+| `app/ai/hypothesis.py` | Weekly: Sonnet reads loss causes, skipped-setup outcomes and the year-1 breakdowns and proposes up to 3 rules from a fixed menu (`signals.RULE_KNOBS`); main.py tests each and turns passes into `rule` proposals |
+| `app/lab.py` | The Lab as the learning account: loss-cause tags for every losing trade (all accounts), refills to the start balance and seasons, the Floor's learning-loop summary |
 | `app/promoter.py` | Lab league table, allowlist candidates/removals, 2-year both-years verification (`python -m app.promoter verify ...`) |
 | `app/ai/research.py` | Weekly research review by Sonnet (Haiku fallback) |
 | `app/tuner.py` | Weekly walk-forward tuning of stop/target/breakeven; runs as a separate low-priority process |
@@ -72,8 +76,8 @@ On first start after an upgrade from the single-account version, the old file is
 | `accounts` | one row per mode: cash (MT5 Balance), equity, peak, starting balance, status (active / paused / paused_daily / paused_weekly / target_hit / halted) |
 | `prices` | M5 and M15 OHLC per symbol (`tf` column); weekend candles for gold/forex are dropped |
 | `positions` | open positions: account, lots, units, entry, stop, initial stop, target, margin, risk $, swap, signal, AI reason (id = MT5 ticket) |
-| `trades` | closed trades: account, ticket, lots, P&L $ (net), P&L R, swap, exit reason |
-| `decisions` | every signal per account: taken or not, the reason, Haiku's raw reply |
+| `trades` | closed trades: account, ticket, lots, P&L $ (net), P&L R, swap, exit reason, decision id, best move (MFE, R), loss-cause tags |
+| `decisions` | every signal per account: taken or not, the reason, Haiku's raw reply, the plan (for shadow outcomes) and the signal's features (hour, day, regime, ADX, volatility, H1 trend, SMC verdict) |
 | `cost_log` | every AI call: purpose (`gate:<mode>`, `news_digest`, `daily_review:<mode>`…), tokens, $ |
 | `equity_snapshots` | every 15 min per account, plus BTC and gold buy-and-hold benchmarks |
 | `playbook_versions`, `lessons` | the learning loop, per mode |
@@ -82,6 +86,8 @@ On first start after an upgrade from the single-account version, the old file is
 | `news_items`, `calendar_events`, `news_digests` | the news pipeline |
 | `strategy_state` | per account, strategy and regime: status, risk multiplier, trades, avg R, why, until |
 | `tuning_runs` | every weekly tuning result: settings before, best found, train/test R, applied or not, why |
+| `lab_seasons` | the Lab's seasons: start/end, equity, why it was refilled |
+| `hypotheses` | weekly rule hypotheses: setup, rule, the AI's reason, passed/failed on unseen data, the proposal it became |
 | `kv` | engine state: day/week start equity per account, benchmark start prices |
 
 ## API (all routes need HTTP Basic auth except `/healthz`)
@@ -94,9 +100,10 @@ On first start after an upgrade from the single-account version, the old file is
 | `GET /api/audit?account=` / `POST /api/audit/run` | Today's audit, the last 14 daily reports, post-mortems / run now |
 | `GET /api/outlook` / `POST /api/outlook/run` | Latest weekly outlook / write it now |
 | `GET /api/floor` (page `/floor`) | All four traders side by side: today's audit and signal funnel, decision log, recent trades, post-mortems, skipped-winner and winner reviews, coach's note, active lessons, last 7 daily grades, and the week in R: trades taken vs what every skipped setup would have made |
+| `GET /api/loop` | The learning loop for the Floor page: Lab season, P&L with refills, loss causes (7 days), recent hypotheses and their test results |
 | `GET /api/research` | Proposals, Lab league table, latest research review, allowlists |
 | `POST /api/research/run` | Run the weekly research job now |
-| `POST /api/proposals/{id}/approve` or `/reject` | Decide an allowlist proposal (approve edits the account's allowlist) |
+| `POST /api/proposals/{id}/approve` or `/reject` | Decide a proposal: allowlist add/remove, AI confidence, or a tested per-setup rule (approve edits that account's settings) |
 | `GET /api/levels?symbol=&tf=` | SMC map for the chart: levels (swept or not), FVGs and order blocks on the chart timeframe and on H1 (`tf: "H1"`) |
 | `GET /api/compare` | per-account stats: equity, trades, win rate, avg R, avg %/day, max drawdown |
 | `GET /api/equity`, `/api/trades?account=`, `/api/decisions?account=`, `/api/scorecard?account=`, `/api/playbook?mode=`, `/api/news` | data for the tabs |

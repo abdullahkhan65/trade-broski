@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from ..db import DB
-from ..instruments import INSTRUMENTS
+from ..instruments import INSTRUMENTS, USD_PER, USD_PER_SOURCE
 from ..sessions import market_open
 
 TIMEFRAMES = {"5m": 5 * 60, "15m": 15 * 60}
@@ -64,6 +64,8 @@ class PriceCache:
         inst = INSTRUMENTS.get(symbol)
         if q and inst and not market_open(inst, now):
             return                      # frozen at the last pre-close price
+        if symbol in USD_PER_SOURCE and bid > 0:
+            USD_PER[USD_PER_SOURCE[symbol]] = (bid + ask) / 2       # EUR/GBP -> USD for GER40/UK100 P&L
         if q:
             q.bid, q.ask, q.ts = bid, ask, now
             if mark is not None:

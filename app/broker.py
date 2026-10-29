@@ -18,6 +18,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from . import lab
 from .exits import manage, with_profile
 from .db import DB, iso
 from .feeds.prices import PriceCache, Quote
@@ -51,6 +52,15 @@ class AccountState:
     @property
     def free_margin(self) -> float:
         return self.equity - self.margin_used
+
+
+def _mfe_r(p: dict) -> float | None:
+    """Best move in the trade's favour, in R of the initial stop distance."""
+    init = abs(p["entry"] - p["initial_stop"])
+    best = p.get("best_price")
+    if not init or best is None:
+        return None
+    return round(max(0.0, (best - p["entry"]) if p["side"] == "LONG" else (p["entry"] - best)) / init, 2)
 
 
 class PaperBroker:
@@ -137,7 +147,9 @@ class PaperBroker:
             "pnl_usd": net, "pnl_r": net / risk if risk > 0 else None, "fees": fees, "swap": swap,
             "funding": funding, "signal": p["signal"], "regime": p.get("regime"), "ai_reason": p["ai_reason"],
             "exit_reason": reason, "opened_at": p["opened_at"], "closed_at": iso(), "trial": int(p.get("trial") or 0),
+            "decision_id": p.get("decision_id"), "mfe_r": _mfe_r(p),
         }
+        trade["causes"] = lab.tag_trade(self.db, trade, inst.currencies)
         cols = ",".join(trade)
         self.db.execute(f"INSERT INTO trades({cols}) VALUES ({','.join('?' * len(trade))})", list(trade.values()))
         self._cash(p["account"], gross)

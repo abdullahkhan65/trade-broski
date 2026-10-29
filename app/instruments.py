@@ -90,6 +90,18 @@ INSTRUMENTS: dict[str, Instrument] = {
     "US100": Instrument("US100", "US100Cash", "US100 (Nasdaq)", "yahoo", "NQ=F", "index", "US100", "USD", 2, 1,
                         ("USD",), ("nasdaq", "tech", "stocks", "fed", "earnings"), "USATECHIDXUSD", 1e3,
                         min_lot=0.1, lot_step=0.1),
+    # 30 Oct 2026: European indices on Yahoo's cash-index data (^GDAXI / ^FTSE, 08:00-16:30 London) - only
+    # cash hours, and the 2-year study was re-run on cash-hours candles only, so live = tested. Positions held
+    # past 16:30 London see no price until the next open (gaps fill at the open, as in the backtest).
+    # Oil on Yahoo's WTI futures (~23h, ~10 min delayed, like US30/US100). Specs are ESTIMATES until copied
+    # from MT5 (contract size, min lot, spread, swap).
+    "GER40": Instrument("GER40", "GER40Cash", "GER40 (DAX)", "yahoo", "^GDAXI", "index", "GER40", "EUR", 2, 1,
+                        ("EUR",), ("dax", "germany", "ecb", "european stocks"), "DEUIDXEUR", 1e3,
+                        min_lot=0.1, lot_step=0.1),
+    "UK100": Instrument("UK100", "UK100Cash", "UK100 (FTSE)", "yahoo", "^FTSE", "index", "UK100", "GBP", 2, 1,
+                        ("GBP",), ("ftse", "uk stocks", "boe"), "GBRIDXGBP", 1e3, min_lot=0.1, lot_step=0.1),
+    "WTI": Instrument("WTI", "OILCash", "WTI Crude Oil", "yahoo", "CL=F", "energy", "OIL", "USD", 2, 100,
+                      ("USD",), ("oil", "crude", "opec", "wti", "brent"), "LIGHTCMDUSD", 1e3),
 }
 
 # RESEARCH CANDIDATES - not traded or streamed yet. Used by the 2-year research to test
@@ -102,13 +114,6 @@ EXTRA_INSTRUMENTS: dict[str, Instrument] = {
     "US500": Instrument("US500", "US500Cash", "US500 (S&P 500)", "yahoo", "ES=F", "index", "US500", "USD", 2, 1,
                         ("USD",), ("s&p", "stocks", "wall street", "fed"), "USA500IDXUSD", 1e3,
                         min_lot=0.1, lot_step=0.1),
-    "GER40": Instrument("GER40", "GER40Cash", "GER40 (DAX)", "yahoo", "^GDAXI", "index", "GER40", "EUR", 2, 1,
-                        ("EUR",), ("dax", "germany", "ecb", "european stocks"), "DEUIDXEUR", 1e3,
-                        min_lot=0.1, lot_step=0.1),
-    "UK100": Instrument("UK100", "UK100Cash", "UK100 (FTSE)", "yahoo", "^FTSE", "index", "UK100", "GBP", 2, 1,
-                        ("GBP",), ("ftse", "uk stocks", "boe"), "GBRIDXGBP", 1e3, min_lot=0.1, lot_step=0.1),
-    "WTI": Instrument("WTI", "OILCash", "WTI Crude Oil", "yahoo", "CL=F", "energy", "OIL", "USD", 2, 100,
-                      ("USD",), ("oil", "crude", "opec", "wti", "brent"), "LIGHTCMDUSD", 1e3),
     "EUR_JPY": Instrument("EUR_JPY", "EURJPY", "EURJPY", "yahoo", "EURJPY=X", "forex", "EUR", "JPY", 3, 100_000,
                           ("EUR", "JPY"), ("eur/jpy", "yen", "boj", "ecb"), "EURJPY", 1e3),
     "GBP_JPY": Instrument("GBP_JPY", "GBPJPY", "GBPJPY", "yahoo", "GBPJPY=X", "forex", "GBP", "JPY", 3, 100_000,
@@ -129,10 +134,18 @@ def get(symbol: str) -> Instrument:
     return INSTRUMENTS[symbol]
 
 
+# USD per unit of a quote currency for instruments priced in EUR/GBP (GER40, UK100). Kept current from the
+# live EURUSD / GBPUSD quotes (feeds/prices.py); these starting values are only used until the first quote.
+USD_PER = {"EUR": 1.10, "GBP": 1.30}
+USD_PER_SOURCE = {"EUR_USD": "EUR", "GBP_USD": "GBP"}
+
+
 def quote_to_usd(inst: Instrument, amount_in_quote: float, price: float) -> float:
-    """USD_JPY is quoted in JPY, so divide by the price; the rest are quoted in USD."""
+    """USD_JPY is quoted in JPY, so divide by the price; GER40/UK100 are in EUR/GBP; the rest in USD."""
     if inst.quote == "JPY":
         return amount_in_quote / price
+    if inst.quote in USD_PER:
+        return amount_in_quote * USD_PER[inst.quote]
     return amount_in_quote
 
 

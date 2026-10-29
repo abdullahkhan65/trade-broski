@@ -12,7 +12,8 @@ The rules come from a **2-year backtest** (Oct 2024 – Oct 2026, XM Standard co
 |---|---|---|---|
 | Style | Patient professional | Swing/day trader | Small-account scaler |
 | Timeframe | M15 | M15 | M15 |
-| Allowlist (proven) | GOLD session breakout · US100 London ORB · US30 London ORB · US30 NY ORB · US30 OB/FVG retest (index setups use the `liq+trail1` exit profile) | same | same |
+| Allowlist | proven: the 8 original setups (GOLD Asian breakout and range reversion; US30 London/NY ORB, OB/FVG retest, H1 pullback; US100 London ORB and OB/FVG retest) plus (v7) GOLD previous-day breakout · DAX OB/FVG retest · FTSE London ORB · FTSE momentum breakout | same | **AGGRESSIVE list**: 15 setups on US30, US100, DAX, FTSE, oil, gold and GBPUSD that were profitable over 2 years in its own rules (looser bar, ~9 trades a week) |
+| AI | vetoes (Haiku, Sonnet on big trades) | vetoes | **advisory** on its list: comments, the rules decide |
 | Exploration (trials) | 1%/week, 1 a day, ≤0.6% risk | 2%/week, 2 a day, ≤0.75% risk | 3%/week, 3 a day, ≤1% risk |
 | Risk per trade | 1% | 1.5% | 2.5% |
 | 0.01 lot allowed up to | 5% | 6% | 6% |
@@ -24,11 +25,11 @@ The rules come from a **2-year backtest** (Oct 2024 – Oct 2026, XM Standard co
 | After losses in a row | 2 → done for the day | 2 → half risk | 3 → half risk |
 | Weekly loss stop / kill switch | 10% / 25% | 12% / 30% | 15% / 35% |
 | Min AI confidence (Haiku, plus Sonnet on big trades) | 0.55 | 0.50 | 0.50 |
-| **2-year backtest from $250, per market** | gold +29% · US30 +87% · US100 +22% | gold +45% · US30 +67% · US100 +27% | gold +27% · US30 +58% · US100 +23% |
+| **2-year backtest from $250, per market** (round 3, 18 Oct; see STRATEGY.md §7f for the 30 Oct re-test) | gold +29% · US30 +87% · US100 +22% | gold +45% · US30 +67% · US100 +27% | gold +27% · US30 +58% · US100 +23% |
 
-**Lab:** takes **every** signal from every strategy on every symbol, with no AI, no filters and no daily caps. It runs at 1% risk, allows the 0.01 lot up to 8%, and has a 50% kill switch. It's there so there's always activity and live data on every strategy. Expect it to lose money: that's what the backtest says these strategies do. Don't copy it.
+**Lab:** takes **every** signal from every strategy on every symbol, with no AI, no filters and no daily caps. It runs at 1% risk and allows the 0.01 lot up to 8%. It's there so there's always activity and live data on every strategy. Expect it to lose money: that's what the backtest says these strategies do. Don't copy it. When it falls below 60% of its start balance (or a weekly pause / kill switch hits) and has no open trade, it is **refilled to $250 and a new season starts**; the Floor page shows the season and the all-time result with refills counted as losses. Every losing trade (any account) gets cause tags, which feed the weekly hypotheses.
 
-**Expect about 3 proven trades a week per real account** (gold ~1, US30 ~1.7, US100 ~0.4), plus small trial trades from the exploration budget most days. Year 2 of the backtest was weaker than year 1 for gold and US30, so the audit's drift check watches them.
+**Expect** about 3-4 trades a week in Standard and Moderate, plus small trial trades most days, and about **9 a week (1-2 a day) in Aggressive**. The 30 Oct 2026 re-test found that some original setups no longer pass in every style (STRATEGY.md §7f), so the audit's drift check watches them. DAX and FTSE trade only 08:00-16:30 London (their live data is cash-hours only).
 
 **Exit profiles:** an allowlist entry can carry an exit profile after `@`, e.g. `US30:zone_retest@liq+trail1` = take-profit at the next liquidity level + 1R trailing stop. Profiles: `base`, `liq`, `trail1`, `trail1.5`, `partial1+trail1`, `liq+trail1`.
 
@@ -76,6 +77,8 @@ Since the only proven edge is on gold, **all three real accounts now accept gold
 - **Liquidity sweep signal** (off): the SMC sweep-and-reclaim strategy, with a stop beyond the wick and a target at the next liquidity. It lost in the first backtest, so it's off until it proves itself.
 - **Only trade with the H1 trend**: hourly candles are built from the M5/M15 ones. Longs only when the H1 close is above EMA50 and EMA20 is above EMA50; shorts the opposite; a flat H1 means no trade.
 - **AI**: minimum confidence for Haiku's TAKE, and what to do when AI is off or over budget.
+- **AI can veto proven setups** (`ai.veto_proven`; on, off in Aggressive): off makes the AI **advisory** on allowlisted setups. It still reads every trade and writes its view, but the coded rules decide, with the coded stops, and there is no Sonnet second opinion. Trades it wanted to skip open with `[AI would skip: …]` in their reason, so Aggressive's results show what the AI's skips cost or save compared with Standard/Moderate, where the AI still vetoes. Trials always need the AI's approval.
+- **Per-setup rules** (`signals.setup_rules`, one per line): extra conditions for a single setup, e.g. `XAU_USD:session_breakout skip_hours=13,14`. Knobs: `skip_hours` (UTC), `skip_days` (Mon..Fri), `regimes` (allowed: trend, range, volatile, mixed), `sides` (LONG or SHORT), `min_atr_pct` / `max_atr_pct` (volatility percentile), `min_adx` / `max_adx`. They are added when you approve a hypothesis that passed the walk-forward test. Blocked signals are logged as "setup rule: …" and tracked like any other skip.
 - **Range reversion / Momentum breakout**: the two regime-specific strategies (see STRATEGY.md §7).
 - **Self-learning**: *Also learn from the Lab's trades* (pooled, half weight); *Strategy switching by regime* on/off; *Trades needed before judging a strategy* (fewer means it adapts faster but reacts to luck); *Weekly self-tuning* on/off. Tuning only ever changes the default stop, target and breakeven, within this mode's own limits.
 - **Weekend**: close, halve or hold gold/forex before Friday's close, and stop opening new trades N minutes before it.
@@ -85,7 +88,7 @@ Since the only proven edge is on gold, **all three real accounts now accept gold
 - **Instruments**: GOLD, EURUSD, GBPUSD and BTCUSD are on; USDJPY is off by default (its price source, Yahoo, is the least reliable).
 - **Indicators**: EMA/RSI/ATR periods, the spike filter and the dead-market filter.
 - **Audit**: the daily floor-manager report, the post-mortem of every losing trade, and coaching (reviews of skipped winners and winning trades, a daily coaching note, weekly lesson curation).
-- **Research (weekly)**: the Lab → allowlist pipeline on/off, how many Lab trades and what average R a pair needs before it's re-tested, and the weekly Sonnet research review.
+- **Research (weekly)**: the Lab → allowlist pipeline on/off, how many Lab trades and what average R a pair needs before it's re-tested, the weekly hypotheses (Sonnet proposes up to 3 rules from the loss causes and year 1 of each setup's replay; only rules that improve year 2, which it never saw, become proposals), and the weekly Sonnet research review.
 - **AI**: on/off, max calls per day (default 120), **total** monthly budget for Haiku + Sonnet (default $6, **hard max $8**), daily review, weekly playbook.
 - **Sonnet**: on/off, its own monthly budget inside the total (default $3, hard max $5), max Sonnet calls per day (default 10), second opinion on/off and its risk threshold (default 1.5%). See ARCHITECTURE.md → "Two AI models".
 - **News & events**: calendar blackout, AI news digest, headline feeds.

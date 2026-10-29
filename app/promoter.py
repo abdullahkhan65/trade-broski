@@ -171,8 +171,14 @@ def apply_proposal(settings: dict, proposal: dict) -> dict:
         node[last] = float(value)
         return data
     sig = data["modes"][proposal["account"]]["signals"]
+    if proposal["action"] == "rule":                   # "XAU_USD:session_breakout skip_hours=13,14"
+        rules = list(sig.get("setup_rules") or [])
+        if proposal["item"] not in rules:
+            rules.append(proposal["item"])
+        sig["setup_rules"] = rules
+        return data
     allow = list(sig.get("allowlist") or [])
-    strategy = proposal["item"].partition(":")[2]
+    strategy = proposal["item"].partition(":")[2].partition("@")[0]
     if proposal["action"] == "add":
         if proposal["item"] not in allow:
             allow.append(proposal["item"])

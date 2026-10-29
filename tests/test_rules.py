@@ -190,3 +190,25 @@ def test_upgrade_v5_to_v6_adds_us30_trend_pullback_once():
         allow = store.cfg(m)["signals"]["allowlist"]
         assert allow.count("US30:htf_pullback@liq+trail1") == 1 and store.cfg(m)["signals"]["htf_pullback"] is True
     assert store.cfg("lab")["signals"]["htf_pullback"] is True
+
+
+def test_upgrade_v6_to_v7_new_markets_and_aggressive_list():
+    from app.settings_store import AGGRESSIVE, PROVEN, PROVEN_V7
+    db = DB(":memory:")
+    old = validate(DEFAULTS)
+    for m in ("standard", "moderate", "aggressive"):
+        old["modes"][m]["signals"]["allowlist"] = list(PROVEN)
+        old["modes"][m]["ai"]["veto_proven"] = True
+    for sym in ("GER40", "UK100", "WTI"):
+        old["instruments"][sym] = False
+    old["modes"]["standard"]["risk"]["risk_per_trade_pct"] = 0.8        # the user's own change survives
+    db.execute("INSERT INTO settings_versions(at, source, data) VALUES (?,?,?)", (iso(), "ui", json.dumps(old)))
+    db.kv_set("settings_defaults_version", 6)
+    store = SettingsStore(db)
+    assert all(store.current["instruments"][s] for s in ("GER40", "UK100", "WTI"))
+    std = store.cfg("standard")
+    assert std["signals"]["allowlist"] == PROVEN + PROVEN_V7 and std["risk"]["risk_per_trade_pct"] == 0.8
+    assert std["ai"]["veto_proven"] is True
+    ag = store.cfg("aggressive")
+    assert ag["signals"]["allowlist"] == AGGRESSIVE and ag["ai"]["veto_proven"] is False
+    assert ag["signals"]["liquidity_sweep"] and ag["signals"]["pdh_breakout"]

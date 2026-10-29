@@ -23,8 +23,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from . import adaptive, audit, promoter, scorecard, shadow, smc
-from .ai import coach, outlook, postmortem, research
+from . import adaptive, audit, lab, promoter, scorecard, shadow, smc
+from .ai import coach, hypothesis, outlook, postmortem, research
 from .ai.client import AIClient
 from .ai.review import current_playbook, daily_review, weekly_playbook
 from .alerts import telegram
@@ -257,13 +257,64 @@ async def run_research() -> dict:
         for cal in promoter.calibrations(db, settings):
             pid = promoter.propose(db, cal["account"], "set", cal["item"], cal["evidence"], cal["reason"])
             made.append(f"🎚 {cal['item']} for {MODE_LABELS[cal['account']]} (#{pid})")
+        if settings["research"].get("hypotheses", True):
+            try:
+                made += await run_hypotheses(settings)
+            except Exception as e:  # noqa: BLE001
+                log.warning("hypothesis step failed: %s", e)
         if made:
-            await telegram.send("🔬 <b>New allowlist proposals</b> (approve in the Learning tab)\n" + "\n".join(made))
+            await telegram.send("🔬 <b>New proposals</b> (approve in the Learning tab)\n" + "\n".join(made))
         if settings["research"]["ai_review"]:
             await telegram.send(await research.weekly_review(ai, db, settings, store.cfg("standard")))
     finally:
         _researching = False
     return {"started": True, "proposals": made}
+
+
+async def _run_json(args: list[str], timeout: float) -> dict:
+    """Run `python -m <args>` at low priority and parse the JSON on its last output line."""
+    proc = await asyncio.create_subprocess_exec("nice", "-n", "10", sys.executable, "-m", *args, cwd=str(ROOT),
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise
+    return json.loads(out.decode().strip().splitlines()[-1])
+
+
+async def run_hypotheses(settings: dict) -> list[str]:
+    """Weekly: Sonnet proposes rules from the loss causes and year 1 of each setup's replay; year 2
+    (unseen) decides. Passes become 'rule' proposals for every account that trades the setup."""
+    allow = {m: settings["modes"][m]["signals"].get("allowlist") or [] for m in promoter.real_modes(settings)}
+    setups = sorted({a for items in allow.values() for a in items if "*" not in a})
+    if not setups:
+        return []
+    # the first run builds the 2-year signal cache per market (slow once, then only new candles)
+    profiles = await _run_json(["app.hypothesis", "profile", "--setups", ",".join(setups)], timeout=4 * 3600)
+    res = await hypothesis.propose(ai, db, settings, store.cfg("standard"), setups, profiles)
+    log.info("hypotheses: %s", res)
+    made = []
+    for h in res["hypotheses"]:
+        rule = f"{h['knob']}={h['value'].replace(' ', '')}"
+        try:
+            r = await _run_json(["app.hypothesis", "test", "--setup", h["setup"], "--rule", rule,
+                                 "--allowlists", json.dumps(allow)], timeout=3600)
+        except Exception as e:  # noqa: BLE001
+            hypothesis.record(db, h["setup"], rule, h["why"], "error", {"reason": str(e)}, None)
+            continue
+        pid = None
+        if r.get("passed"):
+            item = f"{h['setup'].split('@')[0]} {rule}"
+            for m, items in allow.items():
+                if any(a.split("@")[0] == h["setup"].split("@")[0] for a in items) and \
+                        not promoter._recently_decided(db, m, "rule", item):
+                    pid = promoter.propose(db, m, "rule", item, {"hypothesis": h["why"], "test": r["detail"]},
+                                           f"walk-forward test passed: {r['reason']}. Idea: {h['why']}")
+                    made.append(f"🧪 rule {item} for {MODE_LABELS[m]} (#{pid})")
+        hypothesis.record(db, h["setup"], rule, h["why"], "passed" if r.get("passed") else "failed",
+                          {"reason": r.get("reason"), "detail": r.get("detail")}, pid)
+    return made
 
 
 async def run_audit(day: datetime | None = None) -> list[dict]:
@@ -680,10 +731,17 @@ def api_floor(_: str = Depends(auth)) -> list[dict]:
                                      "WHERE account=? AND closed_at >= ?", (m, iso(now - timedelta(days=7))))},
             "decisions": db.all("SELECT at, symbol, signal, side, accepted, reject_reason, signal_note FROM decisions "
                                 "WHERE account=? ORDER BY id DESC LIMIT 25", (m,)),
-            "trades": db.all("SELECT symbol, side, signal, pnl_usd, pnl_r, exit_reason, closed_at, COALESCE(trial,0) trial "
-                             "FROM trades WHERE account=? ORDER BY id DESC LIMIT 8", (m,)),
+            "trades": db.all("SELECT symbol, side, signal, pnl_usd, pnl_r, exit_reason, closed_at, COALESCE(trial,0) trial, "
+                             "causes FROM trades WHERE account=? ORDER BY id DESC LIMIT 8", (m,)),
         })
     return out
+
+
+@app.get("/api/loop")
+def api_loop(_: str = Depends(auth)) -> dict:
+    """The learning loop: the Lab's season and loss causes, and the weekly hypotheses with their test results."""
+    return {"lab": lab.summary(db, days=7), "hypotheses": hypothesis.recent(db, 12),
+            "pending": db.scalar("SELECT COUNT(*) FROM proposals WHERE status='pending'") or 0}
 
 
 _outlook_running = False

@@ -532,18 +532,62 @@ def exit_profile(allowlist: list[str], symbol: str, strategy: str) -> str | None
     return item.partition("@")[2].strip() or None if item else None
 
 
-def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | None = None,
-             news_bias: dict | None = None, disabled: set[str] | None = None,
-             atr_floor: float | None = None, rejected: list | None = None) -> tuple[list[Signal], str]:
-    """Return (signals, filter_reason). filter_reason is '' when filters passed.
-    Several signals can come back (same direction); the engine picks the one the
-    adaptive layer rates best. Signals dropped by the H1-trend or SMC filter are appended to
-    `rejected` as (signal, reason) so the engine can log them and track their shadow outcome."""
-    now = now or datetime.now(timezone.utc)
+DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+RULE_KNOBS = ("skip_hours", "skip_days", "regimes", "sides", "min_atr_pct", "max_atr_pct", "min_adx", "max_adx")
+
+
+def parse_rules(lines: list[str]) -> dict[str, dict]:
+    """Per-setup rules, one per line: 'XAU_USD:session_breakout skip_hours=13,14' (see RULE_KNOBS).
+    Several lines for one setup are merged. Bad lines are ignored."""
+    out: dict[str, dict] = {}
+    for line in lines or []:
+        key, _, rest = line.strip().partition(" ")
+        knob, _, val = rest.strip().partition("=")
+        knob, val = knob.strip(), val.strip()
+        if ":" not in key or knob not in RULE_KNOBS or not val:
+            continue
+        if knob in ("skip_hours",):
+            v: object = sorted({int(x) for x in val.split(",") if x.strip().isdigit()})
+        elif knob in ("skip_days", "regimes", "sides"):
+            v = [x.strip() for x in val.split(",") if x.strip()]
+        else:
+            try:
+                v = float(val)
+            except ValueError:
+                continue
+        out.setdefault(key.split("@")[0], {})[knob] = v
+    return out
+
+
+def rule_block(rule: dict | None, f: dict) -> str | None:
+    """Why a per-setup rule blocks a signal with features `f` (None = allowed)."""
+    if not rule or not f:
+        return None
+    if f.get("hour") in rule.get("skip_hours", []):
+        return f"{f['hour']:02d}:00 UTC is skipped for this setup"
+    if f.get("day") in rule.get("skip_days", []):
+        return f"{f['day']} is skipped for this setup"
+    if rule.get("regimes") and f.get("regime") not in rule["regimes"]:
+        return f"{f.get('regime')} market (setup only in {', '.join(rule['regimes'])})"
+    if rule.get("sides") and f.get("side") not in rule["sides"]:
+        return f"{f.get('side', '').lower()}s are off for this setup"
+    for knob, key, cmp in (("min_atr_pct", "atr_pct", -1), ("max_atr_pct", "atr_pct", 1),
+                           ("min_adx", "adx", -1), ("max_adx", "adx", 1)):
+        if knob in rule and f.get(key) is not None and (f[key] - rule[knob]) * cmp > 0:
+            return f"{key.replace('_pct', ' percentile')} {f[key]:.0f} {'below' if cmp < 0 else 'above'} {rule[knob]:g}"
+    return None
+
+
+def raw_signals(inst: Instrument, candles: list[dict], cfg: dict, now: datetime,
+                news_bias: dict | None = None, disabled: set[str] | None = None,
+                atr_floor: float | None = None) -> tuple[list[Signal], str, float, list]:
+    """Step 1: market filters + every enabled strategy (before liquidity targets, allowlist, rules,
+    conflicts, H1 and SMC). Returns (signals, filter_reason, atr, levels). Each signal carries its
+    features in context['f'] (hour, day, regime, ADX, volatility percentile, side)."""
     disabled = disabled or set()
     f = check_filters(inst, candles, cfg, now, atr_floor)
     if not f.ok:
-        return [], f.reason
+        return [], f.reason, f.atr, []
     s = cfg["signals"]
     out: list[Signal] = []
     if s["trend_pullback"] and "trend_pullback" not in disabled:
@@ -593,8 +637,35 @@ def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | N
             out.append(sig)
     for sig in out:
         sig.regime = regime.name if regime else "unknown"
+        sig.context["f"] = {"hour": now.hour, "day": DAYS[now.weekday()], "regime": sig.regime,
+                            "adx": round(regime.adx, 1) if regime else None,
+                            "atr_pct": round(regime.atr_pct) if regime else None, "side": sig.side}
+    return out, "", f.atr, levels
+
+
+def smc_verdict(sig: Signal, cfg: dict, atr: float, levels: list, zs: list, decimals: int) -> str:
+    """'' if the path to the target is clear, else what blocks it (the SMC location filter's check)."""
+    e = cfg["exits"]
+    stop_dist = (sig.stop_atr or min(max(e["default_stop_atr"], e["min_stop_atr"]), e["max_stop_atr"])) * atr
+    return smc.location_check(sig.side, sig.price, stop_dist, levels, zs, decimals) or ""
+
+
+def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | None = None,
+             news_bias: dict | None = None, disabled: set[str] | None = None,
+             atr_floor: float | None = None, rejected: list | None = None) -> tuple[list[Signal], str]:
+    """Return (signals, filter_reason). filter_reason is '' when filters passed.
+    Several signals can come back (same direction); the engine picks the one the
+    adaptive layer rates best. Signals dropped by a setup rule, the H1-trend or the SMC filter are
+    appended to `rejected` as (signal, reason) so the engine can log them and track their shadow outcome.
+    Every signal's features also get its H1 trend ('h1') and SMC verdict ('smc'), filters on or off -
+    the Lab's loss causes and the hypothesis tester read them."""
+    now = now or datetime.now(timezone.utc)
+    out, reason, atr, levels = raw_signals(inst, candles, cfg, now, news_bias, disabled, atr_floor)
+    if reason:
+        return [], reason
+    s = cfg["signals"]
     if out and s.get("liquidity_targets"):
-        set_liquidity_targets(out, cfg, f.atr, levels)
+        set_liquidity_targets(out, cfg, atr, levels)
     allow = s.get("allowlist") or []
     if allow and out:
         out = [x for x in out if allowed(allow, inst.symbol, x.type)]
@@ -606,13 +677,33 @@ def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | N
             if prof:
                 x.context["exit_profile"] = prof
                 if PROFILES.get(prof, {}).get("liquidity_target"):
-                    set_liquidity_targets([x], cfg, f.atr, levels or smc.key_levels(candles, f.atr))
+                    set_liquidity_targets([x], cfg, atr, levels or smc.key_levels(candles, atr))
+    if out:
+        trend = htf_trend(candles, cfg)
+        levels = levels or smc.key_levels(candles, atr)
+        zs = smc.zones(candles, atr)
+        for x in out:
+            x.context["f"]["h1"] = trend or "n/a"
+            x.context["f"]["smc"] = smc_verdict(x, cfg, atr, levels, zs, inst.decimals)
+    rules = parse_rules(s.get("setup_rules") or [])
+    if rules and out:
+        kept, why = [], ""
+        for x in out:
+            why = rule_block(rules.get(f"{inst.symbol}:{x.type}"), x.context["f"]) or ""
+            if why:
+                if rejected is not None:
+                    rejected.append((x, f"setup rule: {why}"))
+            else:
+                kept.append(x)
+        if not kept:
+            return [], f"setup rule: {why}"
+        out = kept
     # if two signals disagree on direction, take neither
     if len({x.side for x in out}) > 1:
         return [], "conflicting signals"
     if out and s.get("htf_trend_filter"):
-        trend = htf_trend(candles, cfg)
-        if trend is not None:
+        trend = out[0].context["f"]["h1"]
+        if trend != "n/a":
             want = {"up": "LONG", "down": "SHORT"}.get(trend)
             if out[0].side != want:
                 why = f"{out[0].side.lower()} signal against the H1 trend ({trend})"
@@ -622,12 +713,9 @@ def evaluate(inst: Instrument, candles: list[dict], cfg: dict, now: datetime | N
             for sig in out:
                 sig.note += f"; with the H1 trend ({trend})"
     if out and s.get("smc_filter"):
-        zs = smc.zones(candles, f.atr)
-        e = cfg["exits"]
         kept, why = [], ""
         for sig in out:
-            stop_dist = (sig.stop_atr or min(max(e["default_stop_atr"], e["min_stop_atr"]), e["max_stop_atr"])) * f.atr
-            why = smc.location_check(sig.side, sig.price, stop_dist, levels, zs, inst.decimals) or ""
+            why = sig.context["f"]["smc"]
             if not why:
                 kept.append(sig)
             elif rejected is not None:

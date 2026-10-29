@@ -32,6 +32,12 @@ ADDED_COLUMNS = [
     ("decisions", "shadow_result", "TEXT"),     # target | stop | expired
     ("decisions", "shadow_r", "REAL"),
     ("decisions", "shadow_at", "TEXT"),
+    # signal features at decision time (hour, day, regime, ADX, volatility pct, H1 trend, SMC verdict) -
+    # the Lab's loss causes and the hypothesis tester read them
+    ("decisions", "features", "TEXT"),
+    ("trades", "decision_id", "INTEGER"),
+    ("trades", "mfe_r", "REAL"),                   # best move in the trade's favour, in R
+    ("trades", "causes", "TEXT"),                  # loss-cause tags (lab.loss_causes), comma separated
 ]
 
 SCHEMA = """
@@ -293,6 +299,26 @@ CREATE TABLE IF NOT EXISTS weekly_outlooks (
     at TEXT NOT NULL,
     model TEXT NOT NULL,
     data TEXT NOT NULL                          -- JSON: week_summary, global_risks, instruments[], research
+);
+
+CREATE TABLE IF NOT EXISTS lab_seasons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,       -- the Lab is refilled to its start balance when it runs low
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    start_equity REAL NOT NULL,
+    end_equity REAL,
+    reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS hypotheses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,       -- weekly: Sonnet proposes a rule, the 2-year replay tests it
+    at TEXT NOT NULL,
+    setup TEXT NOT NULL,                        -- SYMBOL:strategy[@profile]
+    rule TEXT NOT NULL,                         -- 'skip_hours=13,14' (signals.RULE_KNOBS)
+    why TEXT,
+    result TEXT,                                -- passed | failed | error
+    detail TEXT,                                -- JSON: baseline vs with-rule per year
+    proposal_id INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS kv (

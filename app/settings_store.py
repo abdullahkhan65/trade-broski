@@ -21,7 +21,7 @@ from typing import Any
 from .db import DB, iso
 
 MODES = ["standard", "moderate", "aggressive", "lab"]
-DEFAULTS_VERSION = 6          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
+DEFAULTS_VERSION = 7          # bump + add a step in SettingsStore._upgrade_defaults when defaults change
 MODE_LABELS = {
     "standard": "Standard",
     "moderate": "Moderate",
@@ -29,20 +29,23 @@ MODE_LABELS = {
     "lab": "Lab",
 }
 MODE_BLURBS = {
-    "standard": "Patient professional: trades only the 7 setups that made money in both of the last 2 years "
-                "(GOLD Asian-range breakout and range reversion; US30 London/NY opening-range breakouts and "
-                "order-block/FVG retests; US100 London breakout and retests), on M15 with the H1 trend and SMC "
-                "filters. 1% risk (a 0.01 lot of gold or an index is ~2.5-5% at $250), max 2 trades a day, "
-                "done for the day after 2 losses.",
-    "moderate": "Professional swing/day trader: the same 7 proven setups with 1.5% risk, max 3 trades a day, "
+    "standard": "Patient professional: trades only setups that made money in both of the last 2 years in every "
+                "account style (GOLD Asian-range breakout, range reversion and previous-day breakout; US30/US100 "
+                "opening-range breakouts, order-block/FVG retests and H1 trend pullbacks; DAX retests; FTSE London "
+                "breakout and momentum), on M15 with the H1 trend and SMC filters. 1% risk (a 0.01 lot of gold or "
+                "0.1 of an index is ~2.5-5% at $250), max 2 trades a day, done for the day after 2 losses.",
+    "moderate": "Professional swing/day trader: the same proven setups with 1.5% risk, max 3 trades a day, "
                 "half risk after 2 losses; small trial trades on BTC/GBP near-miss setups.",
-    "aggressive": "Small-account scaler: the same 7 proven setups with 2.5% risk so lots grow fastest as the "
-                  "account grows, quick management (breakeven, trailing, profits taken when momentum stalls), up "
-                  "to 6 trades a day, risk halved after a +4% day.",
+    "aggressive": "Active trader: ~15 setups across US30, US100, DAX, FTSE, oil, gold and GBPUSD that were "
+                  "profitable over 2 years in its own rules (a looser bar than 'proven', ~9 trades a week in the "
+                  "backtest). 2.5% risk, quick management (breakeven, trailing, profits taken when momentum stalls), "
+                  "up to 6 trades a day. Its AI is advisory: it comments on every trade but the rules decide, so its "
+                  "results show what the AI's skips are worth.",
     "lab": "Research account: takes EVERY signal from every strategy with no AI, no filters and no daily caps, "
-           "so there is always activity and live data on what works. Not a strategy to copy.",
+           "so there is always activity and live data on what works. Refilled to its start balance when it runs "
+           "low (a new season); every loss is tagged with its causes. Not a strategy to copy.",
 }
-SYMBOLS = ["XAU_USD", "EUR_USD", "GBP_USD", "USD_JPY", "BTC_USDT", "US30", "US100"]
+SYMBOLS = ["XAU_USD", "EUR_USD", "GBP_USD", "USD_JPY", "BTC_USDT", "US30", "US100", "GER40", "UK100", "WTI"]
 
 DEFAULT_FEEDS = [
     "https://www.investing.com/rss/news_1.rss",
@@ -73,13 +76,30 @@ PROVEN = ["XAU_USD:session_breakout", "US100:london_orb@liq+trail1", "US30:zone_
 # index risks 2.5-5% - far above it, so those can't be trials). Setups that lost in both years were dropped.
 TRIALS = ["BTC_USDT:london_orb@trail1.5", "BTC_USDT:range_reversion", "GBP_USD:range_reversion@liq+trail1"]
 
+# 30 Oct 2026 study (app/study.py: every setup x 3 exits x 3 account styles, 2 years to 29 Oct 2026, $250, the
+# current exits). New setups that made money in BOTH years in all 3 styles - DAX/FTSE re-tested on cash-hours
+# candles only, because that is all the live feed has. Added to every real account.
+PROVEN_V7 = ["XAU_USD:pdh_breakout@liq+trail1", "GER40:zone_retest@liq+trail1", "UK100:london_orb@liq+trail1",
+             "UK100:momentum_breakout@liq+trail1"]
+# The Aggressive account trades for activity: every setup on a live market that clears the AGGRESSIVE bar in its
+# own rules (positive over 2 years in R and $, profit factor >= 1.1, 10+ trades a year, weaker year >= -3R),
+# best of 3 exit profiles each. ~9 trades a week in the backtest (vs ~2-3 under the proven bar). Looser bar =
+# more variance; the audit's drift check and the weekly removals watch every one.
+# Gold's Asian breakout, gold range reversion, US30 zone retest and US30 NY ORB (liq) failed it under
+# Aggressive's faster management (they stay on Standard/Moderate).
+AGGRESSIVE = ["US100:london_orb@liq+trail1", "US100:zone_retest", "US100:htf_pullback",
+              "US100:liquidity_sweep@liq+trail1", "US30:london_orb@trail1.5", "US30:htf_pullback@liq+trail1",
+              "US30:ny_orb", "XAU_USD:pdh_breakout@liq+trail1", "GBP_USD:ny_orb@liq+trail1",
+              "GER40:zone_retest@liq+trail1", "GER40:london_orb@liq+trail1", "GER40:liquidity_sweep@liq+trail1",
+              "UK100:london_orb@liq+trail1", "UK100:momentum_breakout@liq+trail1", "WTI:zone_retest@liq+trail1"]
+
 
 def _explore(budget: float, max_risk: float, per_day: int) -> dict:
     return {"enabled": True, "weekly_budget_pct": budget, "max_risk_pct": max_risk, "max_per_day": per_day,
             "trials": list(TRIALS)}
 
 
-NEW_SIGNALS = {"zone_retest": True, "htf_pullback": True, "liquidity_targets": False, "asian_range_min_atr": 0.0, "asian_range_max_atr": 0.0}
+NEW_SIGNALS = {"setup_rules": [], "zone_retest": True, "htf_pullback": True, "liquidity_targets": False, "asian_range_min_atr": 0.0, "asian_range_max_atr": 0.0}
 
 MODE_DEFAULTS: dict[str, dict[str, Any]] = {
     "standard": {
@@ -89,7 +109,7 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
             "risk_per_trade_pct": 1.0,
             "min_lot_rule": "allow", "min_lot_max_risk_pct": 5.0,
             "max_leverage_forex": 10.0, "max_leverage_metal": 20.0, "max_leverage_crypto": 5.0,
-            "max_leverage_index": 25.0,
+            "max_leverage_index": 25.0, "max_leverage_energy": 10.0,
             "max_margin_used_pct": 50.0,
             "max_open_positions": 2, "max_usd_forex_positions": 1,
             "daily_loss_limit_pct": 5.0, "weekly_loss_limit_pct": 10.0,
@@ -102,11 +122,11 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": False,
                     "range_reversion": True, "momentum_breakout": True, "session_filter": True,
                     "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
-                    "london_orb": True, "ny_orb": True, "pdh_breakout": False,
-                    "allowlist": PROVEN, **NEW_SIGNALS},
+                    "london_orb": True, "ny_orb": True, "pdh_breakout": True,
+                    "allowlist": PROVEN + PROVEN_V7, **NEW_SIGNALS},
         "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True, "pool_lab": True},
         "explore": _explore(1.0, 0.6, 1),
-        "ai": {"use_ai": True, "min_confidence": 0.55, "when_unavailable": "rules_only"},
+        "ai": {"use_ai": True, "veto_proven": True, "min_confidence": 0.55, "when_unavailable": "rules_only"},
         "weekend": {"mode": "close", "minutes_before_close": 30, "no_new_trades_minutes": 120},
     },
     "moderate": {
@@ -116,7 +136,7 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
             "risk_per_trade_pct": 1.5,
             "min_lot_rule": "allow", "min_lot_max_risk_pct": 6.0,
             "max_leverage_forex": 20.0, "max_leverage_metal": 25.0, "max_leverage_crypto": 5.0,
-            "max_leverage_index": 30.0,
+            "max_leverage_index": 30.0, "max_leverage_energy": 15.0,
             "max_margin_used_pct": 60.0,
             "max_open_positions": 3, "max_usd_forex_positions": 2,
             "daily_loss_limit_pct": 6.0, "weekly_loss_limit_pct": 12.0,
@@ -129,11 +149,11 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": True,
                     "range_reversion": True, "momentum_breakout": True, "session_filter": True,
                     "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
-                    "london_orb": True, "ny_orb": True, "pdh_breakout": False,
-                    "allowlist": PROVEN, **NEW_SIGNALS},
+                    "london_orb": True, "ny_orb": True, "pdh_breakout": True,
+                    "allowlist": PROVEN + PROVEN_V7, **NEW_SIGNALS},
         "adaptive": {"enabled": True, "min_trades": 15, "auto_tune": True, "pool_lab": True},
         "explore": _explore(2.0, 0.75, 2),
-        "ai": {"use_ai": True, "min_confidence": 0.5, "when_unavailable": "rules_only"},
+        "ai": {"use_ai": True, "veto_proven": True, "min_confidence": 0.5, "when_unavailable": "rules_only"},
         "weekend": {"mode": "halve", "minutes_before_close": 30, "no_new_trades_minutes": 90},
     },
     "aggressive": {
@@ -143,7 +163,7 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
             "risk_per_trade_pct": 2.5,
             "min_lot_rule": "allow", "min_lot_max_risk_pct": 6.0,
             "max_leverage_forex": 30.0, "max_leverage_metal": 30.0, "max_leverage_crypto": 10.0,
-            "max_leverage_index": 40.0,
+            "max_leverage_index": 40.0, "max_leverage_energy": 20.0,
             "max_margin_used_pct": 70.0,
             "max_open_positions": 3, "max_usd_forex_positions": 2,
             "daily_loss_limit_pct": 7.0, "weekly_loss_limit_pct": 15.0,
@@ -155,12 +175,12 @@ MODE_DEFAULTS: dict[str, dict[str, Any]] = {
                   "max_stop_atr": 3.0, "min_reward_risk": 1.5, "breakeven_at_r": 1.0, **STALL_FAST},
         "signals": {"trend_pullback": True, "session_breakout": True, "news_momentum": True,
                     "range_reversion": True, "momentum_breakout": True, "session_filter": True,
-                    "htf_trend_filter": True, "liquidity_sweep": False, "smc_filter": True,
-                    "london_orb": True, "ny_orb": True, "pdh_breakout": False,
-                    "allowlist": PROVEN, **NEW_SIGNALS},
+                    "htf_trend_filter": True, "liquidity_sweep": True, "smc_filter": True,
+                    "london_orb": True, "ny_orb": True, "pdh_breakout": True,
+                    "allowlist": AGGRESSIVE, **NEW_SIGNALS},
         "adaptive": {"enabled": True, "min_trades": 12, "auto_tune": True, "pool_lab": True},
         "explore": _explore(3.0, 1.0, 3),
-        "ai": {"use_ai": True, "min_confidence": 0.5, "when_unavailable": "rules_only"},
+        "ai": {"use_ai": True, "veto_proven": False, "min_confidence": 0.5, "when_unavailable": "rules_only"},
         "weekend": {"mode": "close", "minutes_before_close": 45, "no_new_trades_minutes": 60},
     },
 }
@@ -173,7 +193,7 @@ MODE_DEFAULTS["lab"] = {
         "risk_per_trade_pct": 1.0,
         "min_lot_rule": "allow", "min_lot_max_risk_pct": 8.0,
         "max_leverage_forex": 50.0, "max_leverage_metal": 30.0, "max_leverage_crypto": 10.0,
-        "max_leverage_index": 50.0,
+        "max_leverage_index": 50.0, "max_leverage_energy": 30.0,
         "max_margin_used_pct": 80.0,
         "max_open_positions": 6, "max_usd_forex_positions": 3,
         "daily_loss_limit_pct": 15.0, "weekly_loss_limit_pct": 30.0,
@@ -192,14 +212,14 @@ MODE_DEFAULTS["lab"] = {
                 **NEW_SIGNALS, "zone_retest": True},
     "adaptive": {"enabled": False, "min_trades": 15, "auto_tune": False, "pool_lab": False},
     "explore": {"enabled": False, "weekly_budget_pct": 0.0, "max_risk_pct": 0.5, "max_per_day": 0, "trials": []},
-    "ai": {"use_ai": False, "min_confidence": 0.0, "when_unavailable": "rules_only"},
+    "ai": {"use_ai": False, "veto_proven": True, "min_confidence": 0.0, "when_unavailable": "rules_only"},
     "weekend": {"mode": "close", "minutes_before_close": 30, "no_new_trades_minutes": 60},
 }
 
 DEFAULTS: dict[str, Any] = {
     "trading_mode": "auto",
     "instruments": {"XAU_USD": True, "EUR_USD": True, "GBP_USD": True, "USD_JPY": False, "BTC_USDT": True,
-                    "US30": True, "US100": True},
+                    "US30": True, "US100": True, "GER40": True, "UK100": True, "WTI": True},
     "indicators": {
         "ema_fast": 20, "ema_slow": 50, "rsi_period": 14, "atr_period": 14,
         "spike_atr_mult": 3.0, "dead_market_percentile": 20.0,
@@ -216,9 +236,11 @@ DEFAULTS: dict[str, Any] = {
     # XM Standard account (MT5). Spreads and swaps in POINTS, as MT5 shows them.
     "broker": {
         "leverage_forex": 1000.0, "leverage_metal": 1000.0, "leverage_crypto": 50.0, "leverage_index": 100.0,
+        "leverage_energy": 100.0,
         "margin_call_pct": 50.0, "stop_out_pct": 20.0,
         "spread_XAU_USD": 50, "spread_EUR_USD": 23, "spread_GBP_USD": 28,
         "spread_USD_JPY": 18, "spread_BTC_USDT": 4000, "spread_US30": 250, "spread_US100": 150,
+        "spread_GER40": 150, "spread_UK100": 150, "spread_WTI": 5,
         "swap_XAU_USD_long": -50.0, "swap_XAU_USD_short": 25.0,
         "swap_EUR_USD_long": -8.0, "swap_EUR_USD_short": 2.0,
         "swap_GBP_USD_long": -4.0, "swap_GBP_USD_short": -3.0,
@@ -226,9 +248,12 @@ DEFAULTS: dict[str, Any] = {
         "swap_BTC_USDT_long": -4000.0, "swap_BTC_USDT_short": -2000.0,
         "swap_US30_long": -800.0, "swap_US30_short": -300.0,
         "swap_US100_long": -600.0, "swap_US100_short": -200.0,
+        "swap_GER40_long": -500.0, "swap_GER40_short": -100.0,
+        "swap_UK100_long": -400.0, "swap_UK100_short": -100.0,
+        "swap_WTI_long": -60.0, "swap_WTI_short": -20.0,
     },
     "engine": {"stop_check_seconds": 3},
-    "research": {"enabled": True, "min_lab_trades": 10, "min_lab_avg_r": 0.05, "ai_review": True,
+    "research": {"enabled": True, "min_lab_trades": 10, "min_lab_avg_r": 0.05, "ai_review": True, "hypotheses": True,
                  "weekly_outlook": True, "outlook_web_search": True, "outlook_searches": 8},
     "audit": {"enabled": True, "post_mortems": True, "coaching": True},
     "modes": copy.deepcopy(MODE_DEFAULTS),
@@ -249,7 +274,7 @@ class Field:
 
 
 _SYM_LABEL = {"XAU_USD": "GOLD", "EUR_USD": "EURUSD", "GBP_USD": "GBPUSD", "USD_JPY": "USDJPY", "BTC_USDT": "BTCUSD",
-              "US30": "US30Cash", "US100": "US100Cash"}
+              "US30": "US30Cash", "US100": "US100Cash", "GER40": "GER40Cash", "UK100": "UK100Cash", "WTI": "OILCash"}
 
 FIELDS: list[Field] = [
     Field("trading_mode", "Trading mode (all accounts)", "General", "choice", choices=["auto", "signals_only"],
@@ -261,7 +286,10 @@ FIELDS: list[Field] = [
                      ("USD_JPY", "USDJPY - Yahoo prices, polled every 15s (less reliable)"),
                      ("BTC_USDT", "BTCUSD - Binance prices"),
                      ("US30", "US30Cash (Dow) - Yahoo futures prices, polled every 15s"),
-                     ("US100", "US100Cash (Nasdaq) - Yahoo futures prices, polled every 15s")]],
+                     ("US100", "US100Cash (Nasdaq) - Yahoo futures prices, polled every 15s"),
+                     ("GER40", "GER40Cash (DAX) - Yahoo cash-index prices, 08:00-16:30 London only"),
+                     ("UK100", "UK100Cash (FTSE) - Yahoo cash-index prices, 08:00-16:30 London only"),
+                     ("WTI", "OILCash (WTI crude) - Yahoo futures prices, polled every 15s")]],
     Field("indicators.ema_fast", "Fast EMA", "Indicators (all modes)", "int", 5, 100, 1),
     Field("indicators.ema_slow", "Slow EMA", "Indicators (all modes)", "int", 10, 300, 1),
     Field("indicators.rsi_period", "RSI period", "Indicators (all modes)", "int", 2, 50, 1),
@@ -297,7 +325,9 @@ FIELDS: list[Field] = [
     Field("broker.leverage_forex", "Account leverage - forex (1:x)", "Broker: XM Standard", "float", 1, 1000, 1,
           help="Margin = notional / this. Copy from MT5 Specification -> Margin."),
     Field("broker.leverage_metal", "Leverage - GOLD (1:x)", "Broker: XM Standard", "float", 1, 1000, 1),
-    Field("broker.leverage_index", "Leverage - US30 / US100 (1:x)", "Broker: XM Standard", "float", 1, 1000, 1,
+    Field("broker.leverage_energy", "Leverage - OILCash (1:x)", "Broker: XM Standard", "float", 1, 1000, 1,
+          help="Estimate - check MT5 Specification for OILCash."),
+    Field("broker.leverage_index", "Leverage - indices (1:x)", "Broker: XM Standard", "float", 1, 1000, 1,
           help="Estimate - check MT5 Specification for US30Cash / US100Cash."),
     Field("broker.leverage_crypto", "Leverage - BTCUSD (1:x)", "Broker: XM Standard", "float", 1, 1000, 1,
           help="XM limits crypto leverage; check your MT5 Specification."),
@@ -328,6 +358,10 @@ FIELDS: list[Field] = [
                "Nothing changes until you approve it in the Learning tab."),
     Field("research.min_lab_trades", "Lab trades needed before a pair is considered", "Research (weekly)", "int", 5, 200, 1),
     Field("research.min_lab_avg_r", "...with an average of at least (R)", "Research (weekly)", "float", -1, 2, 0.05),
+    Field("research.hypotheses", "Weekly hypotheses: AI proposes rules, unseen data tests them", "Research (weekly)", "bool",
+          help="Sunday, with the research job: Sonnet reads the loss causes and year 1 of each setup's 2-year replay "
+               "and proposes up to 3 simple rules (skip an hour, a regime, a volatility band...). Each is tested on "
+               "year 2, which it never saw; only rules that improve it become proposals. ~$0.05 a week."),
     Field("research.weekly_outlook", "Weekly outlook every Sunday (plan per instrument)", "Research (weekly)", "bool",
           help="Sunday 18:00 UTC, before the markets open: Sonnet scans the week ahead (central banks, US data, "
                "earnings, geopolitics, crypto) and writes a plan per instrument - bias, key events with times, "
@@ -352,7 +386,8 @@ MODE_FIELDS: list[Field] = [
     Field("risk.max_leverage_forex", "Max effective leverage - forex", "Risk", "float", 1, 50, 1,
           help="Notional / equity per position. XM allows far more; this is your own cap."),
     Field("risk.max_leverage_metal", "Max effective leverage - GOLD", "Risk", "float", 1, 30, 1),
-    Field("risk.max_leverage_index", "Max effective leverage - US30 / US100", "Risk", "float", 1, 50, 1,
+    Field("risk.max_leverage_energy", "Max effective leverage - OILCash", "Risk", "float", 1, 50, 1),
+    Field("risk.max_leverage_index", "Max effective leverage - indices", "Risk", "float", 1, 50, 1,
           help="0.1 lot of US30 is ~$5,000 notional = ~20x a $250 account."),
     Field("risk.max_leverage_crypto", "Max effective leverage - BTCUSD", "Risk", "float", 1, 10, 1),
     Field("risk.max_margin_used_pct", "Max margin used (%)", "Risk", "float", 5, 80, 5),
@@ -420,6 +455,11 @@ MODE_FIELDS: list[Field] = [
     Field("signals.allowlist", "Only these symbol:strategy pairs (one per line)", "Signals", "list",
           help="Empty = every enabled strategy on every symbol. Otherwise e.g. XAU_USD:session_breakout, "
                "BTC_USDT:*, *:ny_orb. Built from the 2-year backtest: pairs that made money in both years."),
+    Field("signals.setup_rules", "Per-setup rules (one per line)", "Signals", "list",
+          help="Extra conditions for one setup, e.g. 'XAU_USD:session_breakout skip_hours=13,14'. Knobs: "
+               "skip_hours, skip_days (Mon..Fri), regimes (trend,range,volatile,mixed), sides (LONG/SHORT), "
+               "min_atr_pct / max_atr_pct (volatility percentile 0-100), min_adx / max_adx. Added when you approve "
+               "a hypothesis that passed the walk-forward test (Learning tab)."),
     Field("signals.liquidity_sweep", "Liquidity sweep signal (SMC)", "Signals", "bool",
           help="A previous-day/session high or low (or equal highs/lows) is swept and the candle closes back "
                "inside with a rejection wick. Stop beyond the wick, target the opposite liquidity. Off by default: "
@@ -454,6 +494,11 @@ MODE_FIELDS: list[Field] = [
                "proposed for the allowlist by the weekly research job."),
     Field("ai.use_ai", "Ask Claude before trades", "AI", "bool",
           help="Off = rules only, no AI cost (the Lab account). The daily review and playbook are skipped too."),
+    Field("ai.veto_proven", "AI can veto proven setups", "AI", "bool",
+          help="Off = advisory: on allowlisted (proven) setups the AI still reads every trade and writes its view, "
+               "but the coded rules decide, with the coded stops, and no Sonnet second opinion. Trades the AI "
+               "wanted to skip are labelled '[AI would skip: ...]', so their results show whether its skips help. "
+               "Trials always need the AI's approval."),
     Field("ai.min_confidence", "Min AI confidence", "AI", "float", 0, 1, 0.05),
     Field("ai.when_unavailable", "When AI is off / over budget", "AI", "choice", choices=["rules_only", "skip"]),
     Field("weekend.mode", "Friday close: gold/forex positions", "Weekend", "choice", choices=["close", "halve", "hold"]),
@@ -619,6 +664,19 @@ class SettingsStore:
                     data["modes"][m]["signals"]["allowlist"].append("US30:htf_pullback@liq+trail1")
             for m in MODES:
                 data["modes"][m]["signals"]["htf_pullback"] = True
+        if version < 7:
+            # v7 (30 Oct 2026): GER40, UK100 and oil live; 4 new proven setups for every real account; the
+            # Aggressive account trades the AGGRESSIVE list with an advisory AI; Lab trades the new markets too
+            for sym in ("GER40", "UK100", "WTI"):
+                data["instruments"][sym] = True
+            for m in ("standard", "moderate"):
+                sig = data["modes"][m]["signals"]
+                sig["allowlist"] = sig["allowlist"] + [x for x in PROVEN_V7 if x not in sig["allowlist"]]
+                sig["pdh_breakout"] = True
+            ag = data["modes"]["aggressive"]
+            ag["signals"].update(allowlist=list(AGGRESSIVE), pdh_breakout=True, liquidity_sweep=True,
+                                 momentum_breakout=True)
+            ag["ai"]["veto_proven"] = False
         self.save(data, f"upgrade:defaults-v{DEFAULTS_VERSION}")
         self.db.kv_set("settings_defaults_version", DEFAULTS_VERSION)
 

@@ -26,16 +26,17 @@ from .client import AIClient, model_for
 
 RESEARCH_SYSTEM = """You are a macro and markets research analyst preparing a trading desk for the week ahead.
 Use web search to find what matters THIS WEEK for: gold (XAU/USD), the Dow (US30), the Nasdaq 100 (US100),
-EUR/USD, GBP/USD and Bitcoin. Cover: central-bank meetings and speakers (Fed, ECB, BoE), major US/EU/UK data
+the DAX (GER40), the FTSE 100 (UK100), WTI crude oil, EUR/USD, GBP/USD and Bitcoin. Cover: central-bank meetings and speakers (Fed, ECB, BoE), major US/EU/UK data
 (CPI, PCE, NFP, GDP, PMIs, retail sales) with dates and UTC times, big earnings that move the Nasdaq/Dow,
 geopolitics, tariffs/trade, fiscal news, crypto-specific events, and what drove each market last week.
 Be factual and dated; say when something is uncertain. Notes only (no trading advice), max ~700 words."""
 
 PLAN_SYSTEM = """You are the head trader writing the weekly plan for a small paper-trading desk (XM-style CFDs,
-$250 accounts, M15 timeframe). The desk only takes these coded PROVEN setups, each filtered by the H1 trend
-and SMC levels: GOLD Asian-range breakout and range reversion; US30 London/New York opening-range
-breakouts, order-block/FVG retests and H1 trend pullbacks; US100 London opening-range breakout and order-block/FVG retests.
-EURUSD, GBPUSD and BTCUSD only see small trial trades.
+$250 accounts, M15 timeframe). The desk takes coded setups, each filtered by the H1 trend and SMC levels:
+GOLD Asian-range breakout, range reversion and previous-day high/low breakout; US30 and US100 opening-range
+breakouts, order-block/FVG retests, H1 trend pullbacks (US100 also liquidity sweeps); DAX order-block retests,
+London breakout and sweeps (cash hours only); FTSE London breakout and momentum breakouts (cash hours only);
+oil order-block/FVG retests; GBPUSD New York breakout (Aggressive only). EURUSD and BTCUSD see small trial trades.
 From the research notes, the economic calendar, headlines and price structure, write for EACH instrument:
 - bias (bullish / bearish / neutral / two-way) and the 1-3 drivers behind it,
 - key_events: the scheduled events that can move it, with day and UTC time,
@@ -47,7 +48,7 @@ From the research notes, the economic calendar, headlines and price structure, w
 Be honest about uncertainty - "two-way" is a valid bias. Never suggest raising risk or lot size.
 week_summary: 3-4 sentences. global_risks: up to 4. JSON only."""
 
-SYMBOLS = ["XAU_USD", "US30", "US100", "EUR_USD", "GBP_USD", "BTC_USDT"]
+SYMBOLS = ["XAU_USD", "US30", "US100", "GER40", "UK100", "WTI", "EUR_USD", "GBP_USD", "BTC_USDT"]
 
 SCHEMA = {
     "type": "object",
@@ -110,7 +111,7 @@ def _structure(db: DB, sym: str, cfg: dict) -> str:
 def build_inputs(db: DB, cfg: dict, now: datetime) -> tuple[str, str]:
     """(research request, plan context)."""
     end = now + timedelta(days=7)
-    events = events_between(db, now, end, ("USD", "EUR", "GBP", "CNY", "JPY"), ("High", "Medium"))
+    events = events_between(db, now, end, ("USD", "EUR", "GBP", "CNY", "JPY", "CAD"), ("High", "Medium"))
     ev = "\n".join(f"- {e['at'][:16].replace('T', ' ')} UTC {e['currency']} {e['impact']}: {e['title']}"
                    for e in events[:60]) or "- (calendar empty)"
     heads = recent_headlines(db, None, hours=7 * 24, limit=60)
@@ -118,7 +119,7 @@ def build_inputs(db: DB, cfg: dict, now: datetime) -> tuple[str, str]:
     dig = latest_digest(db, max_age_hours=72)
     struct = "\n".join(_structure(db, s, cfg) for s in SYMBOLS if s in INSTRUMENTS)
     research_req = (f"Week ahead starting {week_of(now)} (today {now:%A %d %b %Y}). Our economic calendar "
-                    f"(may be incomplete):\n{ev}\n\nResearch the week ahead for the six markets.")
+                    f"(may be incomplete):\n{ev}\n\nResearch the week ahead for the nine markets.")
     context = (f"WEEK STARTING {week_of(now)}\n\nPRICE STRUCTURE (M15 data)\n{struct}\n\n"
                f"ECONOMIC CALENDAR (next 7 days, high/medium impact)\n{ev}\n\n"
                f"HEADLINES (last 7 days)\n{hd}\n\n"

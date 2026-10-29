@@ -17,7 +17,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-from . import adaptive, risk, scorecard, smc
+from . import adaptive, lab, risk, scorecard, smc
 from .ai import gate
 from .ai.client import AIClient
 from .ai import coach, outlook
@@ -212,6 +212,7 @@ class Engine:
     async def minute_tick(self) -> None:
         now = datetime.now(timezone.utc)
         await self._rollover(now)
+        await self._lab_refill()
         await self._refresh_candles(now)
         await self._manage_positions(now)
         await self._weekend(now)
@@ -239,6 +240,19 @@ class Engine:
                 if st.status in ("paused_weekly", "paused_daily", "target_hit"):
                     self.set_status(m, "active", None)
                     await self.tg.send(f"▶️ [{label}] New week - weekly pause lifted.")
+
+    async def _lab_refill(self) -> None:
+        """The Lab is the learning account: when it runs low it is refilled and a new season starts."""
+        if not self.store.current["modes"][lab.LAB]["enabled"]:
+            return
+        st = self.broker.state(self.cfg(lab.LAB), lab.LAB)
+        why = lab.needs_refill(st.equity, st.starting_balance, st.status, len(self.broker.positions(lab.LAB)))
+        if why:
+            r = lab.refill(self.db, st.equity, why)
+            log.info("Lab refilled: %s", r)
+            await self.tg.send(f"🧪 <b>Lab season {r['season']} over</b> ({why}). Refilled ${r['added']:.2f} - "
+                               f"season {r['next']} starts at ${st.starting_balance:.2f}. Its losses are the cost "
+                               f"of data: see the loss causes on the Floor page.")
 
     async def _refresh_candles(self, now: datetime) -> None:
         for tf in self.timeframes():
@@ -426,9 +440,10 @@ class Engine:
         stop, target = risk.plan_exits(sig.side, sig.price, sig.atr, s_mult, t_mult)
         cur = self.db.execute(
             "INSERT INTO decisions(at, account, symbol, signal, side, regime, signal_note, ai_used, ai_reply, accepted, "
-            "reject_reason, plan_entry, plan_stop, plan_target, plan_tf) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "reject_reason, plan_entry, plan_stop, plan_target, plan_tf, features) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (iso(), account, sig.symbol, sig.type, sig.side, sig.regime, sig.note, int(ai_used), ai_reply,
-             int(accepted), reason, sig.price, stop, target, cfg["timeframe"]))
+             int(accepted), reason, sig.price, stop, target, cfg["timeframe"],
+             json.dumps(sig.context["f"]) if sig.context.get("f") else None))
         return int(cur.lastrowid)
 
     def _pre_checks(self, account: str, inst: Instrument, sig: Signal, now: datetime,
@@ -523,21 +538,28 @@ class Engine:
             res = await gate.ask(self.ai, cfg, prompt)
             ai_used = True
             ai_reply = gate.dumps(res.data) if res.ok else res.error
-            if not res.ok:
+            # advisory AI (Aggressive): on proven setups the AI comments but the coded rules decide, with the
+            # coded stops - so its trades show what the AI's skips would have cost or saved
+            advisory = not trial and not cfg["ai"].get("veto_proven", True)
+            take, why_not = gate.validate_reply(res.data, sig, cfg["ai"]["min_confidence"]) if res.ok else (False, "")
+            if advisory:
+                reason = (f"[AI agrees] {sig.note}" if take else
+                          f"[AI would skip: {why_not or 'AI error: ' + str(res.error)}] {sig.note}")[:300]
+            elif not res.ok:
                 self._record(account, sig, False, f"AI error -> SKIP ({res.error})", ai_used, ai_reply)
                 return
-            take, why_not = gate.validate_reply(res.data, sig, cfg["ai"]["min_confidence"])
-            if not take:
+            elif not take:
                 self.cooldown[(account, sig.symbol, sig.type)] = now + AI_SKIP_COOLDOWN
                 self._record(account, sig, False, why_not, ai_used, ai_reply)
                 return
-            reason = str(res.data.get("reason", ""))[:300]
-            stop_atr, target_atr = res.data["stop_atr"], res.data["target_atr"]
+            else:
+                reason = str(res.data.get("reason", ""))[:300]
+                stop_atr, target_atr = res.data["stop_atr"], res.data["target_atr"]
 
             # high-stakes trade? ask Sonnet before risking it (it can veto)
             first = risk.size_order(inst, cfg, sig.side, entry, sig.atr, st.equity, st.margin_used,
                                     stop_atr, target_atr, risk_mult)
-            why_second = not trial and isinstance(first, risk.Order) and gate.needs_second_opinion(
+            why_second = not trial and not advisory and isinstance(first, risk.Order) and gate.needs_second_opinion(
                 cfg, first.risk_pct, first.note.startswith("0.01 lot"), float(res.data["confidence"]))
             if why_second:
                 res2 = await gate.second_opinion(self.ai, cfg, prompt, res.data, why_second,

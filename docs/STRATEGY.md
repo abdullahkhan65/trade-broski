@@ -110,6 +110,9 @@ Gold on M15 (ATR ~$8 → stop $12): 0.01 lot already risks $12 = 4.8%. Standard 
 | **Coaching note** | 00:15 UTC | per trader (Haiku): did well, fix, focus for today - from the audit and all reviews | Floor page, Audit tab, Telegram | ~$0.0004/day |
 | **Weekly outlook** | Sun 18:00 UTC | Sonnet + web search (max 8 searches): the week's central banks, data, earnings, geopolitics, crypto; then a plan per instrument | Floor page, Telegram; a one-line context for the AI gate (never overrides rules) | ~$0.25-0.35/week |
 | **Lesson curation** | Sun 12:00 UTC | Sonnet (Haiku fallback): all raw lessons -> max 10 active ones; duplicates merged, contradicted ones dropped | the AI gate reads the active lessons before every trade; the playbook rewrite starts from them | ~$0.06/week |
+| **Loss causes** | every losing trade (all accounts) | the signal's features at entry (H1 trend, SMC verdict, regime, volatility, hour) and how the trade went (gave back +1R, wrong from the start), news within the hour | tags shown on the Floor page; counted by the hypothesis step | none |
+| **Lab seasons** | every minute | the Lab's equity | below 60% of its start (or paused / kill switch) and flat: refilled to $250, new season, all-time P&L keeps counting the refills | none |
+| **Hypotheses (walk-forward)** | Sunday, with the research job | loss causes (4 weeks), skipped-setup outcomes and **year 1** of each allowlisted setup's 2-year replay by hour / day / regime / side / volatility / ADX (Sonnet) | up to 3 one-knob rules, each tested on **year 2, which the AI never saw**; passes are **proposed** (`rule` in the Research tab) | ~$0.05/week |
 | **Weekly research review** | Sunday, after the research job | all of the above (Sonnet) | nothing: a written review with recommendations (Research tab + Telegram) | ~$0.05/week |
 
 ### Market regimes
@@ -255,6 +258,28 @@ Rerun it with `python -m app.backtest --mode <mode> --symbol all --days 730`. Th
   added to the allowlists as the 8th proven setup. Only ~30 trades in 2 years: thin evidence, so the audit's
   drift check watches it. The real accounts' trade count is now ~5 a week; daily trades are not supported
   by the evidence on these markets - the daily learning comes from the Lab and the skipped-setup tracking.
+
+## 7f. The 30 Oct 2026 study: more markets, an active Aggressive account, the learning loop
+Why: the real accounts traded ~1-3 times a week; the goal is daily activity to learn from, without
+pretending weak setups are proven.
+
+Method (`python -m app.study grid`, now a tool in `app/`): 14 markets x 10 strategies x 3 exit profiles x
+3 account styles, 2 years to 29 Oct 2026, $250, the CURRENT exits and filters, through the same code as live
+(checked: the old and new engine give identical trades). DAX/FTSE were re-run on **cash-hours candles only**
+(08:00-16:30 London), because that is all their free live feed (Yahoo ^GDAXI / ^FTSE) has.
+
+| Finding | |
+|---|---|
+| New PROVEN (both years, all 3 styles) | GOLD previous-day breakout (liq+trail1), DAX order-block retest, FTSE London breakout, FTSE momentum breakout - added to every real account |
+| Silver, US500, AUDUSD, yen crosses | nothing passes; WTI passes only the looser Aggressive bar (zone retest) |
+| **Old allowlist re-tested** | with today's exits and the latest year, several "proven" setups no longer pass every style: GOLD Asian breakout (Standard +4.9R/-2.1R; Aggressive +3.5R/-10.0R), GOLD range reversion and US30 NY ORB fail in Moderate/Aggressive, US30 zone retest and US100 zone retest lose in year 1 in Standard. Gold's breakout up to 16 Oct was still +7.8R in Standard but -3.5R in Aggressive: it suits patient exits, not Aggressive's quick management. They stay on Standard/Moderate for now - your call (see NEXT_STEPS) |
+| **Aggressive bar** | positive over 2 years in R and $, profit factor >= 1.1, 10+ trades a year, weaker year >= -3R, in the Aggressive account's own rules: 15 setups on live markets, ~9 trades a week in the backtest |
+
+Changes (settings v7): GER40, UK100, OILCash live; Aggressive trades the AGGRESSIVE list with an **advisory AI**
+(it comments, the rules decide) so its trades also measure the AI's skips; the Lab never stops (seasons);
+every loss gets cause tags; a weekly hypothesis step proposes rules that must improve a year the AI never saw.
+Picking the best of 3 exits per setup on a looser bar will let some luck through - expect a few of the 15 to
+disappoint live; the audit's drift check and the weekly removals (12+ live trades, avg < -0.1R) catch them.
 
 ## 8. First backtest result (honest)
 Run on 17 Oct 2026 on BTC:
