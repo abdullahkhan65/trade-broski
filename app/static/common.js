@@ -39,8 +39,8 @@ function toast(msg) {
 function nav(active) {
   const links = [["/", "Terminal"], ["/floor", "Floor"], ["/news", "News & events"], ["/settings", "Settings"]];
   document.body.insertAdjacentHTML("afterbegin",
-    `<nav><span class="brand">📈 AI Paper Trader</span>${links
-      .map(([h, t]) => `<a href="${h}" class="${h === active ? "active" : ""}">${t}</a>`).join("")}
+    `<nav><span class="brand"><span class="logo"></span>Paper Trader</span><span class="links">${links
+      .map(([h, t]) => `<a href="${h}" class="${h === active ? "active" : ""}">${t}</a>`).join("")}</span>
       <span class="right" id="clock"></span></nav>`);
   setInterval(() => {
     const d = new Date();

@@ -466,7 +466,7 @@ def _quotes(account: str) -> dict:
             "last_check": engine.last_check.get((account, sym)),
             "min_lot_risk": engine.min_lot_risk(account, sym, st.equity),
             "regime": engine.regimes.get((sym, cfg["timeframe"])),
-            "contract": inst.contract_size,
+            "contract": inst.contract_size, "asset": inst.asset_class, "min_lot": inst.min_lot,
         }
     return out
 

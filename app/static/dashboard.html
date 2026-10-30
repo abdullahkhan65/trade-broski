@@ -6,7 +6,7 @@
 <title>Paper Trader</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/terminal.css">
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <script src="/static/common.js"></script>
@@ -127,6 +127,8 @@ function selectAccount(a) {
 
 // ------------------------------------------------------------- market watch (rows built once)
 const wlRows = {};
+const AV = { XAU_USD: "Au", EUR_USD: "€", GBP_USD: "£", USD_JPY: "¥", BTC_USDT: "₿", US30: "DJ", US100: "NQ",
+             GER40: "DAX", UK100: "FT", WTI: "OIL" };
 function renderWatchlist(quotes) {
   const wl = document.getElementById("wl");
   for (const [s, q] of Object.entries(quotes)) {
@@ -134,7 +136,7 @@ function renderWatchlist(quotes) {
     if (!r) {
       const el = document.createElement("div");
       el.className = "wl-row"; el.onclick = () => selectSymbol(s);
-      el.innerHTML = `<div class="wl-left"><div class="wl-sym"><span class="dot st"></span><span class="n"></span></div>
+      el.innerHTML = `<div class="wl-left"><span class="av ${q.asset || ""}">${AV[s] || q.xm.slice(0, 2)}</span><div class="wl-sym"><span class="n"></span><span class="dot st"></span></div>
           <div class="wl-sub"><span class="reg"></span><span class="risk"></span></div></div>
         <div class="wl-right wl-px"><div class="wl-bid"></div><div class="wl-sub"><span class="ask"></span><span class="spr faint"></span></div></div>`;
       wl.appendChild(el);
@@ -149,9 +151,9 @@ function renderWatchlist(quotes) {
     const status = !q.open ? "closed" : q.age != null && q.age < 30 ? "live" : "stale";
     setCls(r.st, `dot st ${status === "live" ? "" : status}`); r.st.title = `market ${status}`;
     if (q.min_lot_risk == null) r.risk.style.display = "none";
-    else { r.risk.style.display = ""; setText(r.risk, `${reg ? "· " : ""}0.01 lot = ${q.min_lot_risk.toFixed(1)}%`);
+    else { r.risk.style.display = ""; setText(r.risk, `${reg ? "· " : ""}${q.min_lot ?? 0.01} lot = ${q.min_lot_risk.toFixed(1)}%`);
       setCls(r.risk, `risk ${q.min_lot_risk <= 2 ? "good" : q.min_lot_risk <= 5 ? "high" : "bad"}`);
-      r.risk.title = "Risk of 0.01 lot with this account's default stop"; }
+      r.risk.title = "Risk of the minimum lot with this account's default stop"; }
     const bidTxt = px(q.bid, q.digits);
     if (r.bid.textContent !== bidTxt) {
       const dir = r.last == null || q.bid == null ? null : q.bid > r.last ? "flash-up" : q.bid < r.last ? "flash-down" : null;
@@ -172,15 +174,16 @@ function selectSymbol(s) { sym = s; store.set("sym", s); renderWatchlist(state.q
 // ------------------------------------------------------------------- chart
 function makeChart() {
   chart = LightweightCharts.createChart(document.getElementById("chart"), {
-    layout: { background: { color: "transparent" }, textColor: "#8790a3", fontFamily: "Inter, sans-serif" },
-    grid: { vertLines: { color: "rgba(255,255,255,.03)" }, horzLines: { color: "rgba(255,255,255,.03)" } },
-    timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#1f242e", rightOffset: 6 },
-    rightPriceScale: { borderColor: "#1f242e" },
-    crosshair: { mode: 0, vertLine: { color: "#3a4458", labelBackgroundColor: "#252c3c" }, horzLine: { color: "#3a4458", labelBackgroundColor: "#252c3c" } },
+    layout: { background: { color: "transparent" }, textColor: "#7d8699", fontFamily: "Inter, sans-serif", fontSize: 11 },
+    grid: { vertLines: { color: "rgba(255,255,255,.025)" }, horzLines: { color: "rgba(255,255,255,.035)" } },
+    timeScale: { timeVisible: true, secondsVisible: false, borderVisible: false, rightOffset: 8 },
+    rightPriceScale: { borderVisible: false },
+    crosshair: { mode: 0, vertLine: { color: "rgba(125,139,255,.45)", style: 2, labelBackgroundColor: "#2a3050" },
+                 horzLine: { color: "rgba(125,139,255,.45)", style: 2, labelBackgroundColor: "#2a3050" } },
     autoSize: true,
   });
-  series = chart.addCandlestickSeries({ upColor: "#26a69a", downColor: "#ef5350", borderVisible: false,
-    wickUpColor: "#26a69a", wickDownColor: "#ef5350" });
+  series = chart.addCandlestickSeries({ upColor: "#2dd4a0", downColor: "#ff5c74", borderVisible: false,
+    wickUpColor: "rgba(45,212,160,.75)", wickDownColor: "rgba(255,92,116,.75)" });
   chart.timeScale().subscribeVisibleLogicalRangeChange(() => drawZones());
   document.querySelectorAll("#tf-seg button").forEach((b) => (b.onclick = () => { tf = b.dataset.tf; loadChart(); }));
   document.querySelectorAll(".toggle").forEach((b) => {
@@ -230,14 +233,14 @@ function drawOverlays() {
   levelLines.forEach((l) => series.removePriceLine(l)); levelLines = [];
   if (opts.positions) (state.positions || []).filter((p) => p.symbol === sym).forEach((p) => {
     const lbl = `#${p.id} ${p.side === "LONG" ? "BUY" : "SELL"} ${p.lots.toFixed(2)}`;
-    posLines.push(series.createPriceLine({ price: p.entry, color: "#8790a3", lineWidth: 1, lineStyle: 0, title: lbl }));
-    posLines.push(series.createPriceLine({ price: p.stop, color: "#ef5350", lineWidth: 1, lineStyle: 2, title: "SL" }));
-    posLines.push(series.createPriceLine({ price: p.target, color: "#26a69a", lineWidth: 1, lineStyle: 2, title: "TP" }));
+    posLines.push(series.createPriceLine({ price: p.entry, color: "#9aa3b5", lineWidth: 1, lineStyle: 0, title: lbl }));
+    posLines.push(series.createPriceLine({ price: p.stop, color: "#ff5c74", lineWidth: 1, lineStyle: 2, title: "SL" }));
+    posLines.push(series.createPriceLine({ price: p.target, color: "#2dd4a0", lineWidth: 1, lineStyle: 2, title: "TP" }));
   });
   if (opts.levels) (state.levels || []).forEach((lv) => {
     const strong = /^(PD|equal)/.test(lv.name), session = /(Asian|London|New York)/.test(lv.name);
     if (!strong && !session && lv.swept) return;            // swept minor swings: noise
-    const color = lv.swept ? "rgba(135,144,163,.35)" : strong ? "#c9a227" : session ? "#7fb0ff" : "rgba(135,144,163,.6)";
+    const color = lv.swept ? "rgba(135,144,163,.35)" : strong ? "#f6c453" : session ? "#9aa8ff" : "rgba(135,144,163,.6)";
     const short = lv.name.replace("New York", "NY").replace(" high", " H").replace(" low", " L").replace("swing", "sw")
                          .replace("equal highs", "EQH").replace("equal lows", "EQL");
     levelLines.push(series.createPriceLine({ price: lv.price, color, lineWidth: 1, lineStyle: lv.swept ? 1 : strong ? 0 : 2,
@@ -654,19 +657,19 @@ async function loadCompare() {
     <span>Days running</span><span>${r.days.toFixed(1)}</span></div></div>`).join(""), "cmp");
   const el = document.getElementById("cmp-chart");
   if (cmpChart) cmpChart.remove();
-  cmpChart = LightweightCharts.createChart(el, { layout: { background: { color: "transparent" }, textColor: "#8790a3", fontFamily: "Inter, sans-serif" },
-    grid: { vertLines: { color: "rgba(255,255,255,.03)" }, horzLines: { color: "rgba(255,255,255,.03)" } },
-    timeScale: { timeVisible: true, borderColor: "#1f242e" }, rightPriceScale: { borderColor: "#1f242e" }, autoSize: true });
-  const colors = { standard: "#3b82f6", moderate: "#a78bfa", aggressive: "#f59e0b", lab: "#64748b" };
+  cmpChart = LightweightCharts.createChart(el, { layout: { background: { color: "transparent" }, textColor: "#7d8699", fontFamily: "Inter, sans-serif", fontSize: 11 },
+    grid: { vertLines: { color: "rgba(255,255,255,.025)" }, horzLines: { color: "rgba(255,255,255,.035)" } },
+    timeScale: { timeVisible: true, borderVisible: false }, rightPriceScale: { borderVisible: false }, autoSize: true });
+  const colors = { standard: "#7d8bff", moderate: "#c084fc", aggressive: "#2dd4bf", lab: "#64748b" };
   const t = (iso) => Math.floor(new Date(iso).getTime() / 1000);
   for (const m of MODES) {
     const s = cmpChart.addLineSeries({ color: colors[m], lineWidth: 2, title: LABEL[m] });
     s.setData(eq.filter((r) => r.account === m).map((r) => ({ time: t(r.at), value: r.equity })));
   }
   const base = eq.filter((r) => r.account === "standard");
-  cmpChart.addLineSeries({ color: "#8790a3", lineWidth: 1, lineStyle: 2, title: "BTC hold" })
+  cmpChart.addLineSeries({ color: "#ff9f5a", lineWidth: 1, lineStyle: 2, title: "BTC hold" })
     .setData(base.filter((r) => r.btc_benchmark).map((r) => ({ time: t(r.at), value: r.btc_benchmark })));
-  cmpChart.addLineSeries({ color: "#c9a227", lineWidth: 1, lineStyle: 1, title: "Gold hold" })
+  cmpChart.addLineSeries({ color: "#f6c453", lineWidth: 1, lineStyle: 1, title: "Gold hold" })
     .setData(base.filter((r) => r.gold_benchmark).map((r) => ({ time: t(r.at), value: r.gold_benchmark })));
   cmpChart.timeScale().fitContent();
 }

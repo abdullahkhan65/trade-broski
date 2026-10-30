@@ -6,52 +6,56 @@
 <title>Trading Floor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/terminal.css">
 <script src="/static/common.js"></script>
 <style>
   body { overflow: auto; }
-  .page { padding: 6px 10px 24px; max-width: 1800px; margin: 0 auto; }
-  .topbar { height: 46px; }
-  .intro { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 6px 4px 12px; color: var(--muted); max-width: 1100px; }
-  .floor { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; align-items: start; }
-  .trader { background: var(--panel); border-radius: var(--radius); padding: 14px; min-width: 0; }
-  .trader h3 { margin: 0; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  .trader .eq { font-family: var(--mono); font-size: 20px; margin: 6px 0 2px; }
+  .page { padding: 10px 14px 32px; max-width: 1840px; margin: 0 auto; }
+  .topbar { height: 52px; }
+  .intro { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin: 10px 4px 16px; color: var(--muted); max-width: 1180px; line-height: 1.6; }
+  .floor { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; align-items: start; }
+  .trader { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; min-width: 0;
+            box-shadow: var(--shadow); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+  .trader h3 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; }
+  .trader .eq { font-size: 26px; font-weight: 650; letter-spacing: -.02em; margin: 8px 0 2px; }
   .trader .sub { color: var(--faint); font-size: 11.5px; }
-  .h { font-size: 11.5px; font-weight: 600; color: var(--muted); margin: 16px 0 6px; display: flex; align-items: center; gap: 6px; }
+  .h { font-size: 10.5px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .08em; margin: 20px 0 8px;
+       display: flex; align-items: center; gap: 6px; }
   .finding { display: grid; grid-template-columns: 10px 1fr; gap: 8px; padding: 5px 0; font-size: 12px; }
   .finding .lv { width: 7px; height: 7px; border-radius: 50%; margin-top: 6px; }
   .lv.green { background: var(--up); } .lv.amber { background: var(--warn); } .lv.red { background: var(--down); }
   .finding b { font-weight: 500; color: var(--muted); }
   .funnel { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; text-align: center; }
-  .funnel div { background: var(--panel-2); border-radius: 8px; padding: 6px 2px; }
-  .funnel .n { font-family: var(--mono); font-size: 15px; }
+  .funnel div { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 8px 2px; }
+  .funnel .n { font-size: 17px; font-weight: 650; }
   .funnel .k { color: var(--faint); font-size: 10.5px; }
   .why { color: var(--faint); font-size: 11.5px; margin-top: 6px; line-height: 1.6; }
-  .log { max-height: 320px; overflow: auto; border-radius: 8px; background: var(--panel-2); }
-  .log .row { padding: 6px 10px; border-bottom: 1px solid var(--grid); font-size: 12px; }
+  .log { max-height: 320px; overflow: auto; border-radius: 12px; background: var(--panel-2); border: 1px solid var(--line); }
+  .log .row { padding: 8px 12px; border-bottom: 1px solid var(--grid); font-size: 12px; }
   .log .row:last-child { border-bottom: 0; }
   .log .top { display: flex; gap: 6px; align-items: center; }
-  .log .t { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .log .t { font-size: 11px; color: var(--faint); }
   .log .res { color: var(--muted); font-size: 11.5px; margin-top: 1px; }
   .log .res.ok { color: var(--up); }
-  .pm { background: var(--panel-2); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+  .pm { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-bottom: 8px; font-size: 12px; color: var(--muted); line-height: 1.55; }
   .pm .top { display: flex; gap: 6px; align-items: center; color: var(--text); margin-bottom: 3px; }
   .tr { display: flex; gap: 6px; align-items: center; font-size: 12px; padding: 3px 0; }
-  .tr .r { margin-left: auto; font-family: var(--mono); }
+  .tr .r { margin-left: auto; font-weight: 600; }
   .none { color: var(--faint); font-size: 12px; padding: 4px 0; }
-  .coach { background: var(--accent-soft); border-radius: 8px; padding: 9px 11px; font-size: 12px; color: var(--muted); }
+  .coach { background: linear-gradient(135deg, rgba(125,139,255,.14), rgba(45,212,191,.08)); border: 1px solid rgba(125,139,255,.22);
+           border-radius: 12px; padding: 11px 13px; font-size: 12px; color: var(--muted); line-height: 1.55; }
   .coach div { margin: 2px 0; } .coach b { color: var(--text); font-weight: 500; }
   .lessons { margin: 0; padding-left: 16px; font-size: 12px; color: var(--muted); } .lessons li { margin: 3px 0; }
   .wk { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
-  .wk > div { background: var(--panel-2); border-radius: 8px; padding: 7px 9px; }
-  .wk .n { font-family: var(--mono); font-size: 15px; } .wk .k { color: var(--faint); font-size: 10.5px; }
+  .wk > div { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 9px 11px; }
+  .wk .n { font-size: 17px; font-weight: 650; letter-spacing: -.01em; } .wk .k { color: var(--faint); font-size: 10.5px; }
   .skrow { display: flex; gap: 6px; font-size: 11.5px; padding: 2px 0; color: var(--muted); }
-  .skrow .v { margin-left: auto; font-family: var(--mono); }
-  .outlook { margin-bottom: 8px; }
-  .ol-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
-  .ol-card { background: var(--panel-2); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--muted); }
+  .skrow .v { margin-left: auto; font-weight: 600; }
+  .outlook { margin-bottom: 12px; }
+  .outlook h3 { font-size: 16px; }
+  .ol-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+  .ol-card { background: var(--panel-2); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; font-size: 12px; color: var(--muted); line-height: 1.55; }
   .ol-card .top { display: flex; gap: 8px; align-items: center; color: var(--text); margin-bottom: 4px; }
   .ol-card ul { margin: 3px 0 0; padding-left: 16px; } .ol-card li { margin: 1px 0; }
   .ol-card b { color: var(--text); font-weight: 500; }
@@ -66,7 +70,7 @@
   .hyp { padding: 6px 0; border-top: 1px solid var(--line); }
   .hyp:first-child { border-top: 0; }
   .days { display: flex; gap: 4px; flex-wrap: wrap; }
-  .days span { font-family: var(--mono); font-size: 10.5px; padding: 2px 6px; border-radius: 5px; cursor: default; }
+  .days span { font-size: 10.5px; font-weight: 600; padding: 3px 8px; border-radius: 999px; cursor: default; }
   .days .green { background: var(--up-soft); color: var(--up); } .days .amber { background: var(--warn-soft); color: var(--warn); }
   .days .red { background: var(--down-soft); color: var(--down); }
   @media (max-width: 1400px) { .floor { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
